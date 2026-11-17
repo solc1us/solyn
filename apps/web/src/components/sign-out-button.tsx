@@ -12,8 +12,18 @@ export default function SignOutButton() {
   return (
     <div className="space-y-2">
       <Button
+        type="button"
+        variant="ghost"
+        className="control sign-out"
         disabled={pending}
         onClick={async () => {
+          if (
+            document.querySelector('form[data-unsaved="true"]') &&
+            !window.confirm(
+              "Sign out with unsaved changes? Save your work first if you want to keep it.",
+            )
+          )
+            return;
           setPending(true);
           setError("");
           try {
@@ -30,7 +40,7 @@ export default function SignOutButton() {
           }
         }}
       >
-        {pending ? "Signing out..." : "Sign out"}
+        {pending ? "Signing out…" : "Sign out"}
       </Button>
       {error ? <p role="alert">{error}</p> : null}
     </div>

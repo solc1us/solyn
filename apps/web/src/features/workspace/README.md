@@ -1,11 +1,22 @@
-# Phase 1D workspace backend
+# Workspace backend and functional frontend
 
 ## Entry points
 
 - Server Components / future server-side tool handlers import `workspace` from `./server`.
 - Client UI imports the eight async functions from `./actions` (Next.js Server Functions).
 - Do not instantiate `createWorkspaceService` with client/model identity. Its dependency seam is only for trusted server composition and offline tests. `server.ts` is guarded with `server-only` and obtains a fresh Better Auth session from request headers on every operation.
-- All operations enforce session, validation and ownership internally. Actions contain no duplicate business logic. No extra HTTP API, frontend or cache is introduced; Phase 1E must refresh its views after successful mutations.
+- All operations enforce session, validation and ownership internally. Actions contain no duplicate business logic or extra HTTP API. Phase 1E adds path revalidation to successful mutation adapters, without changing the domain operations or response contracts.
+
+## Phase 1E frontend
+
+- `(workspace)` routes provide the authenticated shell, dashboard, project list/create/detail/edit, and note create/edit screens. Server pages call `workspace` directly; client forms and pagination call the existing Server Functions. The shell's session gate is not a replacement for per-operation authorization.
+- Projects and notes initially load 50 rows, with explicit Load more, raw-page offsets and ID deduplication. No synthetic counts or fabricated production data are shown. Successful writes revalidate affected dashboard/project/note paths; clients refresh after confirmed success.
+- The note editor uses an explicit save and the last confirmed `expectedVersion`. Failed saves retain the exact draft and original version. Conflicts block further saves; loading the latest version is comparison-only. Replacing the draft requires confirmation and adopts that returned version. A subsequent remote edit is still handled by the normal conflict protocol. There is no overwrite/force-save endpoint or automatic retry.
+- Meaningful field changes, including whitespace, are tracked in memory. Normal same-tab links and full-page unloads warn before leaving; same-document Back/Forward uses cancellable Navigation API events where supported. Browsers without that API (or a cancellable event) cannot reliably block SPA history traversal. No private Next.js history APIs, synthetic history entries, local-storage copies or automatic knowledge writes are introduced. Accepting a leave/replacement warning intentionally discards the draft.
+- Expired-session feedback opens login in another tab so the draft remains available. Uncertain creates direct users to check the existing list in another tab before retrying. Drafts are not durable after a browser/process crash or an accepted navigation.
+- App-local styles follow `docs/DESIGN.md`: Geist, navy night-sky background, selective navigation glass with an opaque fallback, opaque readable list/editor surfaces, accessible focus and reduced-motion rules. No new UI framework or dependency is added.
+
+Run `bun test apps/web/src/features/workspace/frontend.test.tsx` for offline reducer, validation, pagination, date and safe-rendering coverage. These tests do **not** establish authenticated browser or PostgreSQL integration.
 
 ## Contracts
 
