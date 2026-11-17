@@ -8,6 +8,7 @@
     "check-types": "tsc --noEmit",
     "start": "next start",
     "env:generate": "varlock codegen",
+    "owner:provision": "varlock run -- bun scripts/provision-owner.ts",
     "auth:generate": "varlock run -- bun x auth@latest generate --config src/services.ts --output ../../packages/db/src/schema/auth.ts --yes"
   },
   "dependencies": {
