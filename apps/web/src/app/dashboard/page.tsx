@@ -1,8 +1,9 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
+import SignOutButton from "@/components/sign-out-button";
+
 import { auth } from "../../services";
-import Dashboard from "./dashboard";
 
 export default async function DashboardPage() {
   const session = await auth.api.getSession({
@@ -14,10 +15,10 @@ export default async function DashboardPage() {
   }
 
   return (
-    <div>
-      <h1>Dashboard</h1>
-      <p>Welcome {session.user.name}</p>
-      <Dashboard session={session} />
-    </div>
+    <main className="space-y-4 p-6">
+      <h1>Workspace</h1>
+      <p>You are signed in. The custom workspace interface is not available yet.</p>
+      <SignOutButton />
+    </main>
   );
 }
