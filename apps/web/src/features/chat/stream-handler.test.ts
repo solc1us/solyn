@@ -288,7 +288,7 @@ test("successful stream uses fixed model, exact persisted input and confirms ful
   const call = f.provider.doStreamCalls[0]!;
   assert.equal(call.maxOutputTokens, MAX_OUTPUT_TOKENS);
   assert.deepEqual(call.providerOptions, {
-    groq: { reasoningFormat: "parsed", reasoningEffort: "low" },
+    groq: { reasoningEffort: "low" },
   });
   assert.equal(call.prompt.filter((m) => m.role === "user").length, 1);
   assert.deepEqual(call.prompt.at(-1), {
@@ -649,6 +649,45 @@ test("ambiguous/conflicting completion never reports success, retries inference 
   );
 });
 
+test("real Groq GPT-OSS stream separates default reasoning without reasoning_format", async () => {
+  let fetches = 0;
+  const f = fixture({
+    provider: (apiKey) =>
+      createGroq({
+        apiKey,
+        fetch: async (_url, init) => {
+          fetches++;
+          const body = JSON.parse(init!.body as string);
+          assert.equal("reasoning_format" in body, false);
+          assert.equal(body.reasoning_effort, "low");
+          const chunk = (delta: unknown, finish_reason: string | null = null) => ({
+            id: "completion",
+            created: 1,
+            model: CHAT_MODEL_ID,
+            choices: [{ index: 0, delta, finish_reason }],
+          });
+          const data =
+            [
+              chunk({ role: "assistant", reasoning: "private-reasoning-SENTINEL" }),
+              chunk({ content: "Visible answer" }),
+              chunk({}, "stop"),
+            ]
+              .map((value) => `data: ${JSON.stringify(value)}\n\n`)
+              .join("") + "data: [DONE]\n\n";
+          return new Response(data, { headers: { "Content-Type": "text/event-stream" } });
+        },
+      })(CHAT_MODEL_ID),
+  });
+  const text = await (await f.post(request())).text();
+  assert.equal(fetches, 1);
+  assert.doesNotMatch(text, /SENTINEL/);
+  assert.equal(events(text).at(-1)!.event, "finish");
+  assert.deepEqual(f.calls.at(-1), {
+    operation: "complete",
+    input: { ...turn, content: "Visible answer" },
+  });
+});
+
 test("real Groq adapter uses only approved model/options and performs one mocked HTTP inference", async () => {
   let fetches = 0;
   const f = fixture({
@@ -662,7 +701,8 @@ test("real Groq adapter uses only approved model/options and performs one mocked
           assert.equal(body.model, CHAT_MODEL_ID);
           assert.equal(body.max_tokens ?? body.max_completion_tokens, MAX_OUTPUT_TOKENS);
           assert.equal(body.stream, true);
-          assert.equal(body.reasoning_format, "parsed");
+          assert.equal("reasoning_format" in body, false);
+          assert.equal("include_reasoning" in body, false);
           assert.equal(body.reasoning_effort, "low");
           assert.ok(!body.tools?.length);
           // A real SDK API-error path, not an injected high-level service result.

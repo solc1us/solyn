@@ -9,7 +9,7 @@ import {
   type ToolSet,
 } from "ai";
 
-import { beginTurnInput } from "./contracts";
+import { isChatText, streamTurnInput as requestInput } from "./contracts";
 import type { createChatService } from "./service";
 
 export const CHAT_MODEL_ID = "openai/gpt-oss-120b";
@@ -18,14 +18,6 @@ export const MAX_OUTPUT_TOKENS = 1024;
 const MAX_BODY_BYTES = 32_768;
 const MAX_OUTPUT_CHARS = 20_000;
 const MAX_HISTORY_CHARS = 6000;
-const requestInput = beginTurnInput
-  .pick({ conversationId: true, turnId: true, content: true })
-  .extend({ content: beginTurnInput.shape.content.max(4000).refine(validText) });
-// PostgreSQL text cannot store NUL; malformed UTF-16 would be silently replaced
-// during UTF-8 encoding rather than preserving the submitted/generated text.
-function validText(text: string) {
-  return text.isWellFormed() && !text.includes("\0");
-}
 type Chat = Pick<
   ReturnType<typeof createChatService>,
   "beginTurn" | "getGenerationContext" | "completeResponse" | "failResponse" | "stopResponse"
@@ -284,7 +276,9 @@ export function createChatStreamHandler(dependencies: {
                 maxOutputTokens: MAX_OUTPUT_TOKENS,
                 maxRetries: 0,
                 abortSignal: abortController.signal,
-                providerOptions: { groq: { reasoningFormat: "parsed", reasoningEffort: "low" } },
+                // GPT-OSS rejects reasoning_format. This adapter has no includeReasoning
+                // option; reasoning remains separate and is ignored below.
+                providerOptions: { groq: { reasoningEffort: "low" } },
                 // SDK default logs raw errors. Inspect stream events instead; never log them.
                 onError: () => {},
               });
@@ -297,7 +291,7 @@ export function createChatStreamHandler(dependencies: {
                 if (value.type === "abort")
                   throw new StreamFailure(abortCode ?? "PROVIDER_NETWORK");
                 if (value.type === "text-delta" && value.text) {
-                  if (!validText(value.text)) throw new StreamFailure("PROVIDER_REJECTED");
+                  if (!isChatText(value.text)) throw new StreamFailure("PROVIDER_REJECTED");
                   if (partial.length + value.text.length > MAX_OUTPUT_CHARS)
                     throw new StreamFailure("OUTPUT_LIMIT");
                   partial += value.text;
