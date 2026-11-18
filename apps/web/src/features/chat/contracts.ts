@@ -27,12 +27,25 @@ export const createConversationInput = z.strictObject({
   projectId: uuid.nullable().default(null),
 });
 export const listConversationsInput = z.strictObject(pagination);
-export const getConversationInput = z.strictObject({ conversationId: uuid, ...pagination });
+export const getConversationInput = z.strictObject({
+  conversationId: uuid,
+  ...pagination,
+  latest: z.boolean().default(false),
+});
 export const beginTurnInput = z.strictObject({
   ...turn,
   content,
   modelId: z.string().trim().min(1).max(200).nullable().default(null),
 });
+export const CHAT_INPUT_LIMIT = 4000;
+export function isChatText(value: string) {
+  // PostgreSQL text cannot store NUL. Unicode mode matches only lone surrogates,
+  // not valid pairs, without requiring String.isWellFormed in the browser.
+  return !value.includes("\0") && !/[\uD800-\uDFFF]/u.test(value);
+}
+export const streamTurnInput = beginTurnInput
+  .pick({ conversationId: true, turnId: true, content: true })
+  .extend({ content: content.max(CHAT_INPUT_LIMIT).refine(isChatText) });
 export const completeResponseInput = z.strictObject({ ...turn, content });
 export const endResponseInput = z.strictObject({
   ...turn,

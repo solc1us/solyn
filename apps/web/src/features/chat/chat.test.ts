@@ -389,6 +389,41 @@ test("retrieval reads one coherent snapshot with ordered, paginated, owned messa
   exhausted(f);
 });
 
+test("latest history pages query backwards with owned scope then return user/assistant chronological order", async () => {
+  const f = fixture([
+    begin,
+    { sql: /from "chat_conversations"/, rows: [conversationRow], inspect: scoped },
+    {
+      sql: /order by "chat_messages"\."created_at" desc, "chat_messages"\."role" asc, "chat_messages"\."id" desc/,
+      rows: [
+        messageRow("assistant", "completed", "answer"),
+        messageRow("user", "completed", content),
+      ],
+      inspect: (sql, params) => {
+        messageScoped(sql, params);
+        assert.deepEqual(params.slice(-2), [50, 50]);
+      },
+    },
+    pending(),
+    clock(),
+    commit,
+  ]);
+  const view = data(
+    await f.service.getConversation({ conversationId, latest: true, limit: 50, offset: 50 }),
+  );
+  assert.deepEqual(
+    view.messages.map((message) => message.role),
+    ["user", "assistant"],
+  );
+  exhausted(f);
+  const invalid = fixture();
+  failure(
+    await invalid.service.getConversation({ conversationId, latest: "true" }),
+    "INVALID_INPUT",
+  );
+  assert.equal(invalid.calls.length, 0);
+});
+
 test("foreign or absent conversations deny direct reads before any message query", async () => {
   const f = fixture([begin, { sql: /from "chat_conversations"/, inspect: scoped }, rollback]);
   failure(await f.service.getConversation({ conversationId }), "NOT_FOUND");

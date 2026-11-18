@@ -221,7 +221,7 @@ Chat is a **primary product workflow**, not a tiny floating chatbot. Treat it as
 
 ```text
 ┌───────────────────────────────────────────────────────────────────────────┐
-│ Ask Solyn                  [All projects ▾ / Project: RESORA]  New chat    │
+│ Ask Solyn                    General chat / Project: RESORA  New chat    │
 ├───────────────────────────────────────────────────────────────────────────┤
 │                                                                           │
 │                  Conversation content (readable width)                    │
@@ -230,13 +230,15 @@ Chat is a **primary product workflow**, not a tiny floating chatbot. Treat it as
 │                                                                           │
 │                                                                           │
 │              ┌───────────────────────────────────────────┐                │
-│              │ Ask about your project or notes…          │                │
+│              │ Message Solyn…                            │                │
 │              │                                     Send  │                │
 │              └───────────────────────────────────────────┘                │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Persistent elements:** compact header, current scope, conversation, bottom composer. Avoid decorative avatars on every message, oversized AI gradients, large welcome heroes, tool icon clutter, and cards surrounding each answer.
+
+**Phase 2D interaction clarification:** desktop chat keeps the existing stationary main canvas, with the message region as its independent scroller and the header/composer stationary. This is chat's exception to the normal canvas content scroller, not a second application layout. Mobile retains normal document scrolling and the navigation drawer, with a sticky bottom composer. History opens on demand as a bounded, keyboard-accessible menu; no permanent third column. Use `General chat` until retrieval exists. Project scope is a visible link back to its project, not a mutable selector; New chat is required to change scope. Create a conversation only on first submit, preserve exact turn IDs for ambiguous retries, and distinguish provisional output from saved history. PM performs manual visual/UX acceptance.
 
 ### 7.2 Composer
 

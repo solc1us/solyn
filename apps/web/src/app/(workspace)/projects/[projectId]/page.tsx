@@ -1,4 +1,4 @@
-import { Plus, Pencil } from "lucide-react";
+import { Plus, Pencil, MessageSquare } from "lucide-react";
 import Link from "next/link";
 
 import Collection from "@/features/workspace/collection";
@@ -25,6 +25,10 @@ export default async function ProjectPage({ params }: { params: Promise<{ projec
           <h1>{project.name}</h1>
         </div>
         <div className="inline-actions">
+          <Link href={`/chat?projectId=${project.id}`} className="secondary-link">
+            <MessageSquare size={15} aria-hidden="true" />
+            Ask Solyn
+          </Link>
           <Link href={`/projects/${project.id}/edit`} className="secondary-link">
             <Pencil size={15} aria-hidden="true" />
             Edit project

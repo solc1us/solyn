@@ -239,7 +239,11 @@ export function createChatService({
               .select(messageFields)
               .from(messages)
               .where(ownedMessages(ownerId, conversation.id))
-              .orderBy(asc(messages.createdAt), desc(messages.role), asc(messages.id))
+              .orderBy(
+                ...(value.latest
+                  ? [desc(messages.createdAt), asc(messages.role), desc(messages.id)]
+                  : [asc(messages.createdAt), desc(messages.role), asc(messages.id)]),
+              )
               .limit(value.limit)
               .offset(value.offset);
             // Detect pending work even when its message lies outside the requested page.
@@ -251,7 +255,7 @@ export function createChatService({
             const now = await databaseNow(tx);
             return {
               conversation,
-              messages: page,
+              messages: value.latest ? page.reverse() : page,
               pendingTurn: pending
                 ? { turnId: pending.turnId, abandoned: abandoned(pending, now) }
                 : null,

@@ -1,7 +1,7 @@
 "use client";
 
 import { Button } from "@solyn/ui/components/button";
-import { FolderClosed, House, Menu, X } from "lucide-react";
+import { FolderClosed, House, Menu, MessageSquare, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -19,10 +19,12 @@ export function Wordmark() {
 export default function WorkspaceShell({
   name,
   email,
+  recentConversations = [],
   children,
 }: {
   name: string;
   email: string;
+  recentConversations?: { id: string; title: string; projectId: string | null }[];
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
@@ -92,7 +94,36 @@ export default function WorkspaceShell({
             <FolderClosed size={17} aria-hidden="true" />
             Projects
           </Link>
+          <Link
+            className="nav-item"
+            href="/chat"
+            aria-current={pathname === "/chat" ? "page" : undefined}
+          >
+            <MessageSquare size={17} aria-hidden="true" />
+            Ask Solyn
+          </Link>
         </nav>
+        {recentConversations.length ? (
+          <nav
+            className="recent-conversations"
+            aria-label="Recent conversations"
+            onClick={(event) => {
+              if (event.target instanceof Element && event.target.closest("a")) setOpen(false);
+            }}
+          >
+            <p>Recent conversations</p>
+            {recentConversations.map((conversation) => (
+              <Link
+                className="nav-item"
+                key={conversation.id}
+                href={`/chat?conversationId=${conversation.id}`}
+              >
+                <span>{conversation.title}</span>
+                <small>{conversation.projectId ? "Project chat" : "General chat"}</small>
+              </Link>
+            ))}
+          </nav>
+        ) : null}
         <div className="sidebar-bottom">
           <div className="account">
             <span className="avatar" aria-hidden="true">
@@ -106,7 +137,12 @@ export default function WorkspaceShell({
           <SignOutButton />
         </div>
       </aside>
-      <main id="workspace-main" className="workspace-main" tabIndex={0} aria-label="Workspace">
+      <main
+        id="workspace-main"
+        className={`workspace-main${pathname === "/chat" ? " is-chat" : ""}`}
+        tabIndex={0}
+        aria-label="Workspace"
+      >
         {children}
       </main>
     </div>
