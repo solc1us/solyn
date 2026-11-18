@@ -487,8 +487,8 @@ fieldset {
   margin-top: 16px;
 }
 .project-form {
-  max-width: 680px;
-  margin: 28px auto 0;
+  width: 100%;
+  margin: 28px 0 0;
 }
 .form-fields {
   display: grid;
@@ -517,10 +517,12 @@ fieldset {
   padding: 7px 10px;
   min-height: 38px;
   height: auto;
+  /* Fields use their existing border instead of the global focus outline or shared rings. */
+  outline: none !important;
   box-shadow: none;
   transition: border-color 120ms;
 }
-.form-control[data-slot]:focus-visible {
+.form-control[data-slot]:focus {
   border-color: var(--ring);
 }
 .form-control[data-slot][aria-invalid="true"] {
@@ -616,6 +618,10 @@ fieldset {
   padding: 12px 0;
   border-color: transparent;
   border-radius: 0;
+}
+.form-control[data-slot]:is(.title-input, .writing-area):focus:not([aria-invalid="true"]) {
+  border-color: transparent;
+  border-bottom-color: var(--ring);
 }
 .editor-metadata {
   margin-top: 28px;
@@ -853,16 +859,25 @@ fieldset {
 .chat-thread,
 .chat-composer-inner {
   width: 100%;
-  max-width: 760px;
-  margin-inline: auto;
+  min-width: 0;
 }
 .chat-empty {
   color: var(--muted-foreground);
   padding: 24px 0;
 }
 .chat-message {
+  min-width: 0;
+  max-width: 760px;
   margin-bottom: 28px;
   overflow-wrap: anywhere;
+}
+.chat-message-user {
+  width: fit-content;
+  max-width: min(75%, 760px);
+  margin-left: auto;
+}
+.chat-message-user > header {
+  justify-content: flex-end;
 }
 .chat-message > header {
   display: flex;
@@ -946,9 +961,13 @@ fieldset {
   background: var(--canvas);
   padding: 10px;
 }
+.chat-composer:focus-within {
+  border-color: var(--ring);
+}
 .chat-input[data-slot] {
   resize: vertical;
   border: 0;
+  outline: none !important;
   box-shadow: none;
   border-radius: 4px;
   padding: 2px 4px;
@@ -993,6 +1012,9 @@ fieldset {
   .chat-messages {
     overflow: visible;
     padding: 20px 16px;
+  }
+  .chat-message-user {
+    max-width: 92%;
   }
   .chat-composer-area {
     position: sticky;

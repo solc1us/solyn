@@ -87,6 +87,7 @@ These are **design targets**, not a mandate to replace every existing token. Adj
 - **Accent:** reserve Solyn Blue for brand punctuation, links, keyboard focus and restrained active/selected indicators. A solid blue CTA is an exceptional, separately reviewed use—not the default hierarchy.
 - **Destructive/error:** semantic treatment only where the operation warrants it; do not camouflage destructive actions as ordinary neutral controls.
 - **Disabled/pending:** clearly distinguish non-interactive state; never rely on color alone. All controls retain visible keyboard focus and accessible contrast.
+- **Form field focus:** bordered inputs, textareas and date fields change only their existing border to the focus token (`--ring` in the implementation); no additional outline, ring, halo or focus shadow. Keep border thickness, radius and dimensions stable. Invalid fields retain their semantic error border and validation text. Intentionally borderless Note Editor title/content use a minimal focus-colored bottom border without adding a surrounding frame. Links, buttons, navigation and other interactive elements retain their visible keyboard focus indicators.
 
 ### 3.3 Compact spacing and radii
 
@@ -129,7 +130,7 @@ Use existing **Geist**. Define hierarchy by weight, spacing and alignment rather
 | Note writing text                 | 16–18px, line height about 1.6    |
 | Reading/chat message width        | Approximately 680–800px for prose |
 
-Do not force a marketing hero into a productivity view. Text-heavy screens should use a readable column inside the full-height canvas.
+Do not force a marketing hero into a productivity view. Constrain individual messages and note prose for readability, not the overall chat thread/composer or Project Form; those fill the canvas content width.
 
 ## 4. App shell and information architecture
 
@@ -201,7 +202,7 @@ Each note row shows a title and relevant date. Differentiate historical `noteDat
 
 ### 5.3 Create/edit forms
 
-Use direct content areas within the canvas, not a floating form card inside another card. Labels and validation stay accessible. Retain the actual Phase 1 domain contracts and all failure/loading behavior. No styling change may alter mutations, session checks, revalidation or note revision logic.
+Use direct content areas within the canvas, not a floating form card inside another card. New and Edit Project share a full-width, left-aligned form with no centered maximum-width column. Align labels, helper text and actions to the canvas content padding; name and description fields fill the available width. This does not change the Note Editor's left-aligned 760px reading-width limit. Labels and validation stay accessible. Retain the actual Phase 1 domain contracts and all failure/loading behavior. No styling change may alter mutations, session checks, revalidation or note revision logic.
 
 ## 6. Note editor — writing-first
 
@@ -224,25 +225,25 @@ Chat is a **primary product workflow**, not a tiny floating chatbot. Treat it as
 │ Ask Solyn                    General chat / Project: RESORA  New chat    │
 ├───────────────────────────────────────────────────────────────────────────┤
 │                                                                           │
-│                  Conversation content (readable width)                    │
-│                  User messages + assistant responses                      │
-│                  Source links / draft actions when supported              │
+│  Solyn response                                   You / status           │
+│  (readable prose width)                  [Neutral user message bubble]    │
+│  Source links / draft actions when supported                              │
 │                                                                           │
 │                                                                           │
-│              ┌───────────────────────────────────────────┐                │
-│              │ Message Solyn…                            │                │
-│              │                                     Send  │                │
-│              └───────────────────────────────────────────┘                │
+│  ┌────────────────────────────────────────────────────────────────────┐  │
+│  │ Message Solyn…                                                     │  │
+│  │                                                              Send  │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Persistent elements:** compact header, current scope, conversation, bottom composer. Avoid decorative avatars on every message, oversized AI gradients, large welcome heroes, tool icon clutter, and cards surrounding each answer.
+**Persistent elements:** compact header, current scope, conversation, bottom composer. The overall thread and composer fill the main canvas content width, without a centered 760px column. Keep their content grid aligned with approximately 24px horizontal padding on desktop and 16px on mobile; constrain individual message widths for readability and scroll code blocks locally rather than overflowing the canvas. Avoid decorative avatars on every message, oversized AI gradients, large welcome heroes, tool icon clutter, and cards surrounding each answer.
 
 **Phase 2D interaction clarification:** desktop chat keeps the existing stationary main canvas, with the message region as its independent scroller and the header/composer stationary. This is chat's exception to the normal canvas content scroller, not a second application layout. Mobile retains normal document scrolling and the navigation drawer, with a sticky bottom composer. History opens on demand as a bounded, keyboard-accessible menu; no permanent third column. Use `General chat` until retrieval exists. Project scope is a visible link back to its project, not a mutable selector; New chat is required to change scope. Create a conversation only on first submit, preserve exact turn IDs for ambiguous retries, and distinguish provisional output from saved history. PM performs manual visual/UX acceptance.
 
 ### 7.2 Composer
 
-- Quiet, neutral composer anchored near the bottom; expands for multiline input. Use a restrained edge/highlight, not a large glowing blue border.
+- Quiet, neutral composer anchored near the bottom; expands for multiline input. Its existing outer border changes to the focus token through `:focus-within`; the inner textarea adds no border, outline, ring or shadow. Preserve visible keyboard focus on Send/Stop buttons; no large glowing blue border.
 - Visible send state; keyboard behavior chosen and documented consistently (e.g., Enter to send, Shift+Enter newline), with IME-safe submission.
 - One primary affordance: **Send**, in the same neutral control hierarchy as the rest of the app. A focused composer may show a subtle blue focus indicator, not a blue-filled Send button. Add a Stop action during generation only when supported by the underlying implementation.
 - Disabled/error states must be understandable; an unavailable LLM never appears as an empty or successful answer.
@@ -250,8 +251,8 @@ Chat is a **primary product workflow**, not a tiny floating chatbot. Treat it as
 
 ### 7.3 Message presentation
 
-- User messages: restrained distinct treatment, aligned consistently, not giant gradient bubbles.
-- Assistant messages: legible document-like text with sensible headings, lists, inline code/code blocks where applicable; no card per paragraph.
+- User messages: right-align the entire block, including the `You` label and status. Use a restrained neutral bubble that fits short messages naturally; cap long messages at 75% of the thread and 760px on desktop, widening to 92% on mobile. Keep message text left-aligned, preserve whitespace and wrap long text; code blocks scroll within the bubble. No giant gradient bubbles.
+- Solyn messages: remain left-aligned, with a readable maximum width of 760px and clean document-like text. Preserve sensible headings, lists, inline code/code blocks without a surrounding bubble or card per paragraph. Role alignment does not change saved, pending, failed, stopped or provisional states.
 - Stream or progressively render only when the implementation supports it. Distinguish **generating**, **complete**, **failed**, and **stopped** states.
 - Keep conversation position stable when new content arrives; do not yank the scroll if the user has scrolled up.
 - Conversation history and thread titles appear only after persistence is implemented; opening another conversation should not silently lose unsent input.
