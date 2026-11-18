@@ -41,3 +41,37 @@ Ownership columns and foreign keys are **not authorization**. Phase 1D must veri
 References inspected: [Securing your Data API](https://supabase.com/docs/guides/api/securing-your-api), [Supabase changelog](https://supabase.com/changelog.md).
 
 No database connection, schema execution, migration application, or provisioning is part of this phase. Offline metadata/query-compilation tests do not prove PostgreSQL constraint enforcement. Integration checks against an approved disposable development target remain required before accepting migration execution.
+
+## Phase 2B chat migration review — NOT APPLIED
+
+Generated with the unchanged Drizzle ORM / Kit **1.0.0-rc.5** workflow:
+
+```sh
+bun run db:generate --name chat_persistence
+```
+
+Artifacts: `20261118093854_chat_persistence/{migration.sql,snapshot.json}`. Generation compares local definitions with the previous local snapshot. It does not connect to PostgreSQL or establish that a remote schema matches that snapshot.
+
+### SQL and compatibility review
+
+- Exactly two new tables: `chat_conversations` and `chat_messages`; no existing table definition is modified. No data mutations, enums, extensions, triggers, grants, or RLS changes.
+- Conversations have database-generated UUID primary keys, required text owner IDs referencing the existing Better Auth `user.id`, nullable project UUIDs referencing `projects.id`, required nonblank titles and required timezone-aware audit timestamps. Null project is global scope.
+- Messages have database-generated UUID primary keys, required conversation/turn UUIDs, required text role/content/status, nullable model ID and required timezone-aware audit timestamps. CHECK constraints restrict roles to user/assistant and statuses to pending/completed/failed/stopped. User messages must be completed and have no model ID; assistants can use the four statuses.
+- All three new FKs use `ON DELETE RESTRICT`. A project/user with retained conversations, or a conversation with retained messages, cannot be deleted. No delete API is introduced. Updates default to NO ACTION.
+- Unique `(conversation_id, turn_id, role)` prevents duplicate roles within a turn. The partial unique index on `(conversation_id) WHERE status = 'pending'` independently enforces at most one pending assistant per conversation. Pair creation and immutable scope/terminal states are enforced by the server service, not by additional tables or triggers.
+- Owner history index `(owner_id, updated_at DESC, id DESC)` matches recent-activity listing and its stable tie-breaker. Ordered-message index `(conversation_id, created_at, role DESC, id)` supports bounded chronological pages; role DESC puts user before assistant at the pair's shared timestamp. Both role/status columns are text with CHECKs, not PostgreSQL enums.
+- The migration adds all tables before their FK statements. Existing auth/project/note/revision definitions and the Phase 1 migration artifacts remain unchanged. Verify the actual target has the approved Phase 1 schema and an approved baseline/migration history; the earlier initial-auth baseline warning still applies. Do not blindly run the full migration chain against an existing database.
+
+### Minimum protection proposal — requires PM approval before execution
+
+The new tables are in `public`, following the current architecture. Foreign keys and server owner predicates do **not** protect direct Supabase REST/GraphQL access. Better Auth uses its own text user IDs and sessions, not Supabase Auth JWTs; an `auth.uid()` policy would not implement this ownership model.
+
+The minimum architecture-compatible boundary is **no Data API access to these backend-only tables**. Before applying, independently inspect the exact development target's exposed schemas, automatically exposed table settings, default privileges, effective PUBLIC/anon/authenticated privileges, and backend database role. If the application does not use the Data API, PM can approve disabling it. If it must remain enabled, obtain approval for table-specific revocation of all privileges from PUBLIC/anon/authenticated, retaining only necessary backend-role access, and RLS enabled with no public allow policies as defense in depth. Verify backend access remains compatible: a non-owner/non-bypass backend role needs a separately reviewed backend-role policy, not a fabricated Supabase user mapping. Do not add public grants or default-privilege changes speculatively.
+
+**None of these permission/RLS/infrastructure changes are included or applied here.** The generated table-only migration must not be executed until PM approves the chosen exposure protections and how they will be applied atomically with table creation (or verifies Data API is already disabled). Also review inherited privileges and GraphQL/Realtime exposure as applicable. Do not rely on current platform defaults; they vary by project age and settings.
+
+References reviewed: [Supabase changelog](https://supabase.com/changelog.md) and [Securing your API](https://supabase.com/docs/guides/api/securing-your-api). No Supabase client, CLI, or extension upgrade is part of this work.
+
+### Remaining execution gate
+
+PM must approve the exact non-production target, Phase 1 baseline compatibility, exposure/grant/RLS plan, this SQL, and the ten-minute pending-turn recovery policy before rollout. Review backup/recovery and a disposable-development integration plan covering FK/CHECK/unique enforcement, real simultaneous turn requests, rollback, and interrupted/ambiguous commits. No migration, SQL execution, provisioning, or database connection was performed for Phase 2B.
