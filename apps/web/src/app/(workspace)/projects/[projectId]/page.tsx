@@ -23,10 +23,6 @@ export default async function ProjectPage({ params }: { params: Promise<{ projec
       <header className="page-heading">
         <div>
           <h1>{project.name}</h1>
-          {project.description ? (
-            <p className="project-description">{project.description}</p>
-          ) : null}
-          <p className="metadata">Created {formatDate(project.createdAt)}</p>
         </div>
         <div className="inline-actions">
           <Link href={`/projects/${project.id}/edit`} className="secondary-link">
@@ -39,6 +35,10 @@ export default async function ProjectPage({ params }: { params: Promise<{ projec
           </Link>
         </div>
       </header>
+      <div className="project-summary">
+        {project.description ? <p className="project-description">{project.description}</p> : null}
+        <p className="metadata">Created {formatDate(project.createdAt)}</p>
+      </div>
       <div className="section-heading">
         <h2>Notes</h2>
       </div>

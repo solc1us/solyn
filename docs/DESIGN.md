@@ -151,8 +151,9 @@ Do not force a marketing hero into a productivity view. Text-heavy screens shoul
 ```
 
 - Keep existing sidebar location and account/logout behavior. Reduce its brightness/visual weight if needed; do not redesign it from scratch.
-- Put **the page header inside the same right-hand canvas** as the content. A single subtle header boundary is allowed.
-- Main canvas fills available height (`min-height`/flex strategy as supported by existing app); when the list is short, the remaining space stays empty and calm.
+- Put **the page header inside the same right-hand canvas** as the content. Keep it visible as a sticky header during desktop content scrolling; a single subtle header boundary is allowed. Long project descriptions and metadata belong in the scrolling content, not the persistent header.
+- On desktop (above the existing 760px mobile breakpoint), keep the sidebar and main canvas stationary within the viewport. Preserve the canvas's 16px outer margins, sidebar gap and rounded corners; bound its height to the viewport instead of letting long content grow the document.
+- Use the main canvas as the single workspace content scroll container across Workspace/Dashboard, Projects, Project Detail, create/edit forms and Note Editor, including loading/error states. Do not add a second page-level scroller or lock scrolling globally on login/mobile. Keep keyboard access to the scrollable canvas, visible focus and scroll clearance beneath its header; allow the existing sidebar and textareas to scroll when needed. When content is short, remaining canvas space stays empty and calm.
 - Remove separate large `.surface` collection cards nested under a free-floating page heading. Avoid multiple layered borders and shadows.
 - Use consistent header height, left inset and action placement across Projects, Project Detail, Note, and later Chat.
 - Do not create a duplicate navigation hierarchy or decorative dashboard widgets just to fill space.
@@ -176,7 +177,7 @@ Avoid introducing custom tab-management infrastructure, cross-route state framew
 
 ### 4.3 Mobile
 
-Maintain existing accessible mobile drawer. The content canvas fills width with reduced margins; no permanent right preview. Header actions may collapse into a small menu. AI source/draft preview becomes a modal or separate screen with a clear **Back to chat** action. Preserve accessible focus, scrolling, and unsaved-change warnings.
+Maintain existing accessible mobile drawer. At the mobile breakpoint, preserve natural document scrolling: the canvas grows with content and page headers stay in normal flow beneath the existing mobile navigation. Do not carry over the desktop fixed canvas/internal scrolling constraint or introduce a scroll trap. The content canvas fills width with reduced margins; no permanent right preview. Header actions may collapse into a small menu. AI source/draft preview becomes a modal or separate screen with a clear **Back to chat** action. Preserve accessible focus, scrolling, and unsaved-change warnings.
 
 ## 5. Workspace, projects and note lists
 
@@ -207,7 +208,7 @@ Use direct content areas within the canvas, not a floating form card inside anot
 - Compact project breadcrumb and note header, with explicit **Save** as the main action using neutral-elevated styling.
 - Title feels like a document heading rather than an input nested in multiple panels.
 - Date and version metadata are secondary. A minimal major divider is acceptable to separate document chrome from writing area.
-- Plain-text content area, comfortable line height and limited reading width inside the canvas. Avoid persistent glowing borders or multiple frames.
+- Left-align both New and Edit Note content with the main canvas's content padding; do not horizontally center the editor. Let it fill available width up to a reasonable 760px maximum reading width, shrinking with the viewport. Keep title, date, plain-text content and save controls in this aligned column, preserving comfortable writing line height. Avoid persistent glowing borders or multiple frames.
 - Keep exact whitespace, nullable historical note date, client validation, no-op save behavior, `expectedVersion`, conflict/reload comparison and unsaved-draft protection.
 - No per-keystroke autosave. Never claim success before the backend confirms persistence.
 - No rich-text engine, revision-history panel, or AI rewriting UI until separately scoped.

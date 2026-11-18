@@ -106,7 +106,7 @@ export default function WorkspaceShell({
           <SignOutButton />
         </div>
       </aside>
-      <main id="workspace-main" className="workspace-main" tabIndex={-1}>
+      <main id="workspace-main" className="workspace-main" tabIndex={0} aria-label="Workspace">
         {children}
       </main>
     </div>
