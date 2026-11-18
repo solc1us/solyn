@@ -63,14 +63,24 @@ function fixture(steps: Step[] = [], userId: string | null = "user-a") {
   const client = { query, on() {}, off() {}, release() {} };
   db.$client.connect = (async () => client) as unknown as typeof db.$client.connect;
   let sessionCalls = 0;
+  let sessionUserId = userId;
   const service = createChatService({
     db,
     getSession: async () => {
       sessionCalls++;
-      return userId ? { user: { id: userId } } : null;
+      return sessionUserId ? { user: { id: sessionUserId } } : null;
     },
   });
-  return { service, calls, remaining, assertionErrors, sessionCalls: () => sessionCalls };
+  return {
+    service,
+    calls,
+    remaining,
+    assertionErrors,
+    sessionCalls: () => sessionCalls,
+    expireSession: () => {
+      sessionUserId = null;
+    },
+  };
 }
 function scoped(sql: string, params: unknown[]) {
   assert.match(sql, /"chat_conversations"\."owner_id" = \$/);
@@ -176,6 +186,42 @@ test("every chat operation requires a fresh server session before SQL", async ()
   for (const call of operations(f.service)) failure(await call(), "UNAUTHENTICATED");
   assert.equal(f.calls.length, 0);
   assert.equal(f.sessionCalls(), 9);
+});
+
+test("session expiry after confirmed begin denies context and every terminal/recovery operation before SQL", async () => {
+  const f = fixture([begin, lock, replay(), clock(), pending(), insertTurn, touch, commit]);
+  assert.equal(data(await f.service.beginTurn(beginInput)).replayed, false);
+  const before = f.calls.length;
+  f.expireSession();
+  for (const call of [
+    () => f.service.getGenerationContext(turnInput),
+    () => f.service.completeResponse({ ...turnInput, content: "Answer" }),
+    () => f.service.failResponse(turnInput),
+    () => f.service.stopResponse(turnInput),
+    () => f.service.recoverAbandonedTurn(turnInput),
+  ])
+    failure(await call(), "UNAUTHENTICATED");
+  assert.equal(f.calls.length, before);
+  assert.equal(f.sessionCalls(), 6);
+  exhausted(f);
+});
+
+test("begin and finalization explicitly use READ COMMITTED with message reads after the row lock", async () => {
+  const mutationBegin: Step = { sql: /^begin isolation level read committed$/ };
+  const f = fixture([mutationBegin, lock, replay(), clock(), pending(), insertTurn, touch, commit]);
+  data(await f.service.beginTurn(beginInput));
+  exhausted(f);
+  const end = fixture([
+    mutationBegin,
+    lock,
+    replay([messageRow()]),
+    clock(),
+    terminal("completed", "Answer"),
+    touch,
+    commit,
+  ]);
+  data(await end.service.completeResponse({ ...turnInput, content: "Answer" }));
+  exhausted(end);
 });
 
 test("strict validation bounds inputs and rejects identity, scope mutation and unsupported states", async () => {
