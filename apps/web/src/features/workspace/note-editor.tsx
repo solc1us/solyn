@@ -50,7 +50,7 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
   return (
     <div className="editor-wrap">
       <form
-        className="surface note-editor"
+        className="note-editor"
         noValidate
         data-unsaved={dirty}
         aria-busy={pending}
@@ -104,7 +104,9 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
         <div className="editor-toolbar">
           <p className="save-indicator" role="status">
             {pending
-              ? "Working…"
+              ? loadingLatest
+                ? "Loading…"
+                : "Saving…"
               : state.savedFeedback
                 ? "Saved"
                 : dirty
@@ -135,7 +137,7 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
               maxLength={300}
               required
               autoComplete="off"
-              placeholder="Give this note a title"
+              placeholder="Note title"
               aria-invalid={!!errors.title}
               aria-describedby={errors.title ? "note-title-error" : undefined}
             />
@@ -176,7 +178,7 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
               maxLength={100000}
               required
               spellCheck
-              placeholder="Capture the context. Keep the details that matter."
+              placeholder="Write your note…"
               aria-invalid={!!errors.content}
               aria-describedby={`note-content-help${errors.content ? " note-content-error" : ""}`}
               autoComplete="off"

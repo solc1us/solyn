@@ -23,9 +23,9 @@ export default async function ProjectPage({ params }: { params: Promise<{ projec
       <header className="page-heading">
         <div>
           <h1>{project.name}</h1>
-          <p className="project-description">
-            {project.description || "A space for this project’s notes and decisions."}
-          </p>
+          {project.description ? (
+            <p className="project-description">{project.description}</p>
+          ) : null}
           <p className="metadata">Created {formatDate(project.createdAt)}</p>
         </div>
         <div className="inline-actions">
@@ -41,7 +41,6 @@ export default async function ProjectPage({ params }: { params: Promise<{ projec
       </header>
       <div className="section-heading">
         <h2>Notes</h2>
-        <span>Original context, kept together</span>
       </div>
       <Collection key={listKey(notes)} projectId={project.id} initial={notes.map(noteRow)} />
     </div>

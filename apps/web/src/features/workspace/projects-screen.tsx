@@ -14,26 +14,14 @@ export default async function ProjectsScreen({ home = false }: { home?: boolean 
     <div className="page-content">
       <header className="page-heading">
         <div>
-          <h1>{home ? "Your workspace" : "Projects"}</h1>
-          <p>
-            {home
-              ? "A little space to keep the whole picture."
-              : "The context, decisions, and notes for everything you’re working on."}
-          </p>
+          <h1>{home ? "Workspace" : "Projects"}</h1>
         </div>
         <Link href="/projects/new" className="primary-link">
           <Plus size={17} aria-hidden="true" />
           New project
         </Link>
       </header>
-      {home ? (
-        <div className="section-heading">
-          <h2>Your projects</h2>
-          <span>Private to your account</span>
-        </div>
-      ) : null}
       <Collection key={listKey(projects)} initial={projects.map(projectRow)} />
-      <p className="workspace-footnote">A place for the details you’ll want to remember.</p>
     </div>
   );
 }

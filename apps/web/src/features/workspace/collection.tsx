@@ -58,14 +58,7 @@ export default function Collection({
   }
 
   return (
-    <section
-      aria-label={projectId ? "Project notes" : "Your projects"}
-      className="collection surface"
-    >
-      <div className="collection-heading">
-        <span>{projectId ? "Note" : "Project"}</span>
-        <span>Last edited</span>
-      </div>
+    <section aria-label={projectId ? "Project notes" : "Your projects"} className="collection">
       {rows.length ? (
         <ul className="collection-list">
           {rows.map((row) => (
@@ -83,6 +76,7 @@ export default function Collection({
                   {row.noteDate ? <p>Note date: {formatDate(row.noteDate)}</p> : null}
                 </div>
                 <time dateTime={new Date(row.updatedAt).toISOString()}>
+                  <span className="sr-only">Last edited </span>
                   {formatDate(row.updatedAt)}
                 </time>
                 <ChevronRight size={16} className="row-chevron" aria-hidden="true" />
@@ -93,12 +87,13 @@ export default function Collection({
       ) : (
         <div className="empty-state">
           <Icon size={28} aria-hidden="true" />
-          <h2>{projectId ? "Start with a note" : "Make room for your next project"}</h2>
-          <p>
-            {projectId
-              ? "Capture a discussion, a decision, or something worth remembering. Create your first note to get started."
-              : "Keep the context, decisions, and notes for each project together. Create your first project to begin."}
-          </p>
+          <p>{projectId ? "No notes yet." : "No projects yet."}</p>
+          <Link
+            href={projectId ? `/projects/${projectId}/notes/new` : "/projects/new"}
+            className="secondary-link"
+          >
+            {projectId ? "New note" : "New project"}
+          </Link>
         </div>
       )}
       {error ? (

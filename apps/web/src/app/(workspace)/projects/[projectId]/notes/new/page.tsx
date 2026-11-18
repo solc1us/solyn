@@ -14,7 +14,6 @@ export default async function NewNotePage({ params }: { params: Promise<{ projec
       <header className="page-heading">
         <div>
           <h1>New note</h1>
-          <p>A discussion, a decision, a thought worth keeping.</p>
         </div>
       </header>
       <NoteEditor key={`new-${project.id}`} projectId={project.id} />

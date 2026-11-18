@@ -18,7 +18,6 @@ export default async function EditProjectPage({
       <header className="page-heading">
         <div>
           <h1>Edit project</h1>
-          <p>Keep the context clear.</p>
         </div>
       </header>
       <ProjectForm key={project.id} initial={project} />

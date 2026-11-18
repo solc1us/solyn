@@ -23,7 +23,6 @@ export default async function NotePage({
       <header className="page-heading">
         <div>
           <h1>Project note</h1>
-          <p>Keep the original context. Make room for what’s next.</p>
         </div>
       </header>
       <NoteEditor key={note.id} projectId={project.id} initial={note} />

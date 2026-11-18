@@ -29,7 +29,7 @@ export default function ProjectForm({ initial }: { initial?: Project }) {
 
   return (
     <form
-      className="surface project-form"
+      className="project-form"
       noValidate
       data-unsaved={dirty}
       aria-busy={pending}
@@ -86,7 +86,7 @@ export default function ProjectForm({ initial }: { initial?: Project }) {
             required
             aria-invalid={!!errors.name}
             aria-describedby={errors.name ? "project-name-error" : undefined}
-            placeholder="Give your project a name"
+            placeholder="Project name"
           />
           <FieldError id="project-name-error" message={errors.name} />
         </div>
@@ -107,7 +107,7 @@ export default function ProjectForm({ initial }: { initial?: Project }) {
             placeholder="What is this project about?"
           />
           <p id="project-description-help" className="field-help">
-            A little context for when you come back to it.
+            Optional context for this project.
           </p>
           <FieldError id="project-description-error" message={errors.description} />
         </div>

@@ -8,7 +8,6 @@ export default function NewProjectPage() {
       <header className="page-heading">
         <div>
           <h1>New project</h1>
-          <p>Give your notes a place to belong.</p>
         </div>
       </header>
       <ProjectForm />
