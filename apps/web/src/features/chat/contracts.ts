@@ -40,6 +40,7 @@ export const endResponseInput = z.strictObject({
   content: z.string().max(100_000).optional(),
 });
 export const recoverTurnInput = z.strictObject(turn);
+export const generationContextInput = z.strictObject(turn);
 
 export type CreateConversationInput = z.input<typeof createConversationInput>;
 export type BeginTurnInput = z.input<typeof beginTurnInput>;

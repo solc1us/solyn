@@ -168,13 +168,14 @@ const operations = (service: ReturnType<typeof createChatService>) => [
   () => service.failResponse(turnInput),
   () => service.stopResponse(turnInput),
   () => service.recoverAbandonedTurn(turnInput),
+  () => service.getGenerationContext(turnInput),
 ];
 
 test("every chat operation requires a fresh server session before SQL", async () => {
   const f = fixture([], null);
   for (const call of operations(f.service)) failure(await call(), "UNAUTHENTICATED");
   assert.equal(f.calls.length, 0);
-  assert.equal(f.sessionCalls(), 8);
+  assert.equal(f.sessionCalls(), 9);
 });
 
 test("strict validation bounds inputs and rejects identity, scope mutation and unsupported states", async () => {
@@ -219,6 +220,76 @@ test("strict validation bounds inputs and rejects identity, scope mutation and u
   );
   assert.equal(f.calls.length, 0);
   assert.equal(contracts.beginTurnInput.parse(beginInput).content, content);
+});
+
+test("generation context is a bounded chronological set of completed owned pairs, without notes", async () => {
+  const f = fixture([
+    { sql: /^begin isolation level repeatable read read only$/ },
+    { sql: /from "chat_conversations"/, rows: [conversationRow], inspect: scoped },
+    {
+      sql: /left\("context_user"\."content", 2000\).*left\("chat_messages"\."content", 2000\).*inner join "chat_messages" "context_user"/,
+      rows: [
+        ["Recent question", "Recent answer"],
+        ["Earlier question", "Earlier answer"],
+      ],
+      inspect: (sql, params) => {
+        messageScoped(sql, params);
+        assert.match(sql, /"context_user"\."conversation_id" = "chat_messages"\."conversation_id"/);
+        assert.match(sql, /"context_user"\."turn_id" = "chat_messages"\."turn_id"/);
+        assert.match(sql, /"chat_messages"\."turn_id" <> \$/);
+        assert.match(
+          sql,
+          /order by "chat_messages"\."created_at" desc, "chat_messages"\."id" desc limit \$/,
+        );
+        assert.equal(params.filter((p) => p === "completed").length, 2);
+        assert.ok(params.includes("user"));
+        assert.ok(params.includes("assistant"));
+        assert.ok(params.includes(turnId));
+        assert.equal(params.at(-1), 8);
+        assert.doesNotMatch(sql, /"notes"|note_revisions/);
+      },
+    },
+    commit,
+  ]);
+  const result = data(await f.service.getGenerationContext(turnInput));
+  assert.equal(result.project, null);
+  assert.deepEqual(
+    result.turns.map((turn) => turn.user),
+    ["Earlier question", "Recent question"],
+  );
+  exhausted(f);
+});
+
+test("generation context includes only authorized project metadata and rejects inaccessible scope", async () => {
+  const f = fixture([
+    begin,
+    {
+      sql: /from "chat_conversations"/,
+      rows: [[conversationId, projectId, "Conversation", now, now]],
+      inspect: scoped,
+    },
+    {
+      sql: /select left\("name", 200\), left\("description", 1000\) from "projects"/,
+      rows: [["Project", "Description"]],
+      inspect: (sql, params) => {
+        assert.match(sql, /"owner_id" = \$/);
+        assert.deepEqual(params, [projectId, "user-a"]);
+      },
+    },
+    { sql: /inner join "chat_messages" "context_user"/ },
+    commit,
+  ]);
+  assert.deepEqual(data(await f.service.getGenerationContext(turnInput)).project, {
+    name: "Project",
+    description: "Description",
+  });
+  exhausted(f);
+  const denied = fixture([begin, { sql: /from "chat_conversations"/, inspect: scoped }, rollback]);
+  failure(await denied.service.getGenerationContext(turnInput), "NOT_FOUND");
+  exhausted(denied);
+  const invalid = fixture();
+  failure(await invalid.service.getGenerationContext({ ...turnInput, projectId }), "INVALID_INPUT");
+  assert.equal(invalid.calls.length, 0);
 });
 
 test("global conversation creation derives owner, normalizes title and keeps null scope", async () => {

@@ -4,7 +4,8 @@ import {
   chatMessages as messages,
 } from "@solyn/db/schema/chat";
 import { projects } from "@solyn/db/schema/workspace";
-import { and, asc, desc, eq, exists, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, exists, isNull, ne, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { z } from "zod";
 
 import * as contracts from "./contracts";
@@ -255,6 +256,61 @@ export function createChatService({
                 ? { turnId: pending.turnId, abandoned: abandoned(pending, now) }
                 : null,
             };
+          },
+          { isolationLevel: "repeatable read", accessMode: "read only" },
+        ),
+      );
+    },
+    getGenerationContext(input: unknown) {
+      return run(contracts.generationContextInput, input, async (value, ownerId) =>
+        db.transaction(
+          async (tx) => {
+            const [conversation] = await tx
+              .select(conversationFields)
+              .from(conversations)
+              .where(owned(ownerId, value.conversationId));
+            if (!conversation) throw missing();
+            let project: { name: string; description: string | null } | null = null;
+            if (conversation.projectId) {
+              const [row] = await tx
+                .select({
+                  name: sql<string>`left(${projects.name}, 200)`,
+                  description: sql<string | null>`left(${projects.description}, 1000)`,
+                })
+                .from(projects)
+                .where(and(eq(projects.id, conversation.projectId), eq(projects.ownerId, ownerId)));
+              if (!row) throw missing();
+              project = row;
+            }
+            // Only completed pairs from this owned conversation. No notes or
+            // unrelated project history. Limit both row count and fetched text.
+            const users = alias(messages, "context_user");
+            const turns = await tx
+              .select({
+                user: sql<string>`left(${users.content}, 2000)`,
+                assistant: sql<string>`left(${messages.content}, 2000)`,
+              })
+              .from(messages)
+              .innerJoin(
+                users,
+                and(
+                  eq(users.conversationId, messages.conversationId),
+                  eq(users.turnId, messages.turnId),
+                  eq(users.role, "user"),
+                  eq(users.status, "completed"),
+                ),
+              )
+              .where(
+                and(
+                  ownedMessages(ownerId, conversation.id),
+                  eq(messages.role, "assistant"),
+                  eq(messages.status, "completed"),
+                  ne(messages.turnId, value.turnId),
+                ),
+              )
+              .orderBy(desc(messages.createdAt), desc(messages.id))
+              .limit(8);
+            return { conversation, project, turns: turns.reverse() };
           },
           { isolationLevel: "repeatable read", accessMode: "read only" },
         ),

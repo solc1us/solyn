@@ -12,12 +12,14 @@
     "auth:generate": "varlock run -- bun x auth@latest generate --config src/services.ts --output ../../packages/db/src/schema/auth.ts --yes"
   },
   "dependencies": {
+    "@ai-sdk/groq": "^4.0.85",
     "@solyn/auth": "workspace:*",
     "@solyn/db": "workspace:*",
     "@solyn/ui": "workspace:*",
     "@swc/helpers": "^0.5.23",
     "@tanstack/react-form": "^1.33.5",
     "@varlock/nextjs-integration": "1.2.5",
+    "ai": "^7.0.176",
     "babel-plugin-react-compiler": "^1.0.0",
     "better-auth": "catalog:",
     "drizzle-orm": "catalog:",
