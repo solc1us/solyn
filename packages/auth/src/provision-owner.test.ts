@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createRequire } from "node:module";
 
 import { createDb } from "@solyn/db";
 import { verifyPassword } from "better-auth/crypto";
 
-import { ownerInput, provisionOwner, validateDevelopmentTarget } from "./provision-owner";
+import {
+  describeProvisioningFailure,
+  ownerInput,
+  provisionOwner,
+  ProvisioningFailure,
+  validateDevelopmentTarget,
+} from "./provision-owner";
 
 const config = {
   BETTER_AUTH_URL: "http://localhost:3001",
@@ -32,6 +39,8 @@ function fixture(
     missing?: boolean;
     invalid?: boolean;
     fail?: RegExp;
+    error?: unknown;
+    connectError?: unknown;
     afterUser?: () => void;
   } = {},
 ) {
@@ -48,7 +57,8 @@ function fixture(
   const query = async (request: { text: string; rowMode?: string }, params: unknown[] = []) => {
     const text = request.text;
     calls.push(text);
-    if (options.fail?.test(text)) throw new Error("Injected driver failure; never log this object");
+    if (options.fail?.test(text))
+      throw options.error ?? new Error("Injected driver failure; never log this object");
     let rows: unknown[] = [];
     if (text.includes("pg_catalog.pg_class")) rows = [{ ready: !options.missing }];
     else if (text.startsWith('select "id" from "user"'))
@@ -85,6 +95,7 @@ function fixture(
   };
   db.$client.connect = (async () => {
     connections++;
+    if (options.connectError) throw options.connectError;
     return client;
   }) as unknown as typeof db.$client.connect;
   return { db, calls, inserted, stats: () => ({ connections, releases, poolQueries }) };
@@ -126,7 +137,13 @@ test("the supported signup API and credential hashing stay on the locked outer t
 
 test("any pre-existing user prevents signup regardless of email", async () => {
   const f = fixture({ existing: true });
-  await assert.rejects(provisionOwner(f.db, config, owner), /a user already exists/);
+  await assert.rejects(
+    provisionOwner(f.db, config, owner),
+    (error) =>
+      error instanceof ProvisioningFailure &&
+      error.stage === "existing-user-check" &&
+      error.diagnostic.category === "PRECONDITION_FAILED",
+  );
   assert.equal(f.inserted.length, 0);
   assert.equal(f.calls.at(-1), "rollback");
   assert.equal(f.stats().releases, 1);
@@ -134,7 +151,13 @@ test("any pre-existing user prevents signup regardless of email", async () => {
 
 test("missing auth tables abort before lock or signup", async () => {
   const f = fixture({ missing: true });
-  await assert.rejects(provisionOwner(f.db, config, owner), /tables are missing/);
+  await assert.rejects(
+    provisionOwner(f.db, config, owner),
+    (error) =>
+      error instanceof ProvisioningFailure &&
+      error.stage === "auth-table-verification" &&
+      error.diagnostic.category === "PRECONDITION_FAILED",
+  );
   assert.ok(!f.calls.some((text) => text.startsWith("lock table")));
   assert.equal(f.inserted.length, 0);
   assert.equal(f.calls.at(-1), "rollback");
@@ -168,6 +191,147 @@ test("an abort after the user insert cannot commit a partial signup", async () =
   const f = fixture({ afterUser: () => controller.abort() });
   await assert.rejects(provisionOwner(f.db, config, owner, controller.signal));
   assert.equal(f.calls.at(-1), "rollback");
+});
+
+for (const [stage, fail, code] of [
+  ["transaction-initialization", /^begin/, "42501"],
+  ["transaction-initialization", /^set local/, "42501"],
+  ["auth-table-verification", /pg_catalog.pg_class/, "42P01"],
+  ["table-locking", /^lock table/, "55P03"],
+  ["existing-user-check", /^select "id" from "user"/, "42501"],
+  ["better-auth-signup", /^insert into "account"/, "23505"],
+  ["credential-verification", /as valid/, "42501"],
+  ["transaction-commit", /^commit$/, "08007"],
+] as const)
+  test(`diagnostics identify ${stage} and allowlisted PostgreSQL code`, async () => {
+    const f = fixture({
+      fail,
+      error: Object.assign(new Error("private driver details"), { code }),
+    });
+    await assert.rejects(provisionOwner(f.db, config, owner), (error) => {
+      assert.ok(error instanceof ProvisioningFailure);
+      assert.equal(error.stage, stage);
+      assert.equal(error.diagnostic.postgresCode, code);
+      const diagnostic = describeProvisioningFailure(error, "input-validation");
+      assert.ok(diagnostic.includes(code));
+      assert.ok(!diagnostic.includes("private driver details"));
+      assert.equal(Object.hasOwn(error, "cause"), false);
+      assert.ok(!JSON.stringify(error).includes(owner.password));
+      return true;
+    });
+  });
+
+test("checkout/TLS failures are distinguished from BEGIN without opening a connection", async () => {
+  const f = fixture({
+    connectError: Object.assign(new Error("private hostname and certificate"), {
+      code: "SELF_SIGNED_CERT_IN_CHAIN",
+    }),
+  });
+  await assert.rejects(provisionOwner(f.db, config, owner), (error) => {
+    assert.ok(error instanceof ProvisioningFailure);
+    assert.equal(error.stage, "database-connection");
+    assert.equal(error.diagnostic.category, "TLS_CERTIFICATE_VERIFICATION");
+    assert.equal(error.diagnostic.postgresCode, undefined);
+    assert.ok(!describeProvisioningFailure(error, "input-validation").includes("private hostname"));
+    return true;
+  });
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.stats().releases, 0);
+});
+
+test("Better Auth's normalized creation failure is reported without its API body", async () => {
+  const f = fixture({
+    fail: /^insert into "user"/,
+    error: Object.assign(new Error("private creation details"), { code: "42501" }),
+  });
+  await assert.rejects(provisionOwner(f.db, config, owner), (error) => {
+    assert.ok(error instanceof ProvisioningFailure);
+    assert.equal(error.stage, "better-auth-signup");
+    assert.equal(error.diagnostic.category, "AUTH_SIGNUP_REJECTED");
+    // Better Auth intentionally discards this original driver error; do not invent a code.
+    assert.equal(error.diagnostic.postgresCode, undefined);
+    return true;
+  });
+});
+
+test("diagnostics never expose unknown messages, codes, stacks, query parameters or API fields", () => {
+  const secret = "private-password-hash-token-connection-string";
+  for (const error of [
+    secret,
+    null,
+    Object.assign(new Error(secret), {
+      code: secret,
+      params: [secret],
+      detail: secret,
+      stack: secret,
+      body: { message: secret, token: secret },
+    }),
+    { code: "00000", message: "timeout exceeded when trying to connect " + secret },
+    {
+      get message() {
+        throw new Error("Getter must not run");
+      },
+      get cause() {
+        throw new Error("Getter must not run");
+      },
+    },
+  ]) {
+    const text = describeProvisioningFailure(error, "connection-cleanup");
+    assert.equal(text, "Failed stage: Connection cleanup. Category: UNCLASSIFIED.");
+    assert.ok(!text.includes(secret));
+  }
+  const cycle: { cause?: unknown } = {};
+  cycle.cause = cycle;
+  assert.match(describeProvisioningFailure(cycle, "connection-cleanup"), /UNCLASSIFIED/);
+});
+
+test("known nested codes, cancellation, exact code-less timeouts and cleanup use safe categories", () => {
+  for (const [error, category] of [
+    [{ cause: { cause: { code: "28P01", message: "private" } } }, "DATABASE_AUTHENTICATION"],
+    [{ code: "ENOTFOUND", hostname: "private" }, "DNS_LOOKUP"],
+    [{ code: "ECONNREFUSED" }, "CONNECTION_REFUSED"],
+    [{ code: "ECONNRESET" }, "CONNECTION_INTERRUPTED"],
+    [new Error("timeout exceeded when trying to connect"), "CONNECTION_TIMEOUT"],
+    [{ code: "ABORT_ERR" }, "CANCELLED"],
+    [new DOMException("private", "AbortError"), "CANCELLED"],
+  ] as const) {
+    const text = describeProvisioningFailure(error, "connection-cleanup");
+    assert.ok(text.includes(`Category: ${category}.`));
+    assert.ok(!text.includes("private"));
+  }
+});
+
+test("the installed pg parser preserves Session Pooler identity and certificate verification offline", () => {
+  // Constructor/parsing only. Never call connect(), query() or the provisioning CLI.
+  const requireDb = createRequire(import.meta.resolve("@solyn/db"));
+  const { Client } = requireDb("pg") as {
+    Client: new (config: { connectionString: string }) => {
+      connectionParameters: {
+        host: string;
+        port: number;
+        user: string;
+        database: string;
+        ssl: boolean | { rejectUnauthorized?: boolean };
+      };
+    };
+  };
+  const host = "aws-0-example.pooler.supabase.com";
+  const user = "postgres.abcdefghijklmnopqrst";
+  const target = `postgresql://${user}@${host}:5432/postgres`;
+  const validated = validateDevelopmentTarget({
+    ...env,
+    SOLYN_OWNER_DEV_TARGET: target,
+    DATABASE_URL: `postgresql://${user}:unused@${host}:5432/postgres?sslmode=verify-full`,
+  });
+  const parameters = new Client({ connectionString: validated.DATABASE_URL }).connectionParameters;
+  assert.equal(parameters.host, host);
+  assert.equal(parameters.port, 5432);
+  assert.equal(parameters.user, user);
+  assert.equal(parameters.database, "postgres");
+  assert.ok(
+    parameters.ssl === true ||
+      (typeof parameters.ssl === "object" && parameters.ssl.rejectUnauthorized !== false),
+  );
 });
 
 test("target guard needs development AND an independently configured exact identity", () => {

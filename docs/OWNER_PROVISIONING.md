@@ -75,6 +75,35 @@ Offline tests execute the **real signup API, default password hashing, adapter a
 
 This demonstrates transaction routing with the pinned dependencies. It does **not** prove actual PostgreSQL persistence, lock scheduling, rollback, or concurrent-connection behavior. Those remain pending separately approved integration verification; repeat this compatibility review if Better Auth/Drizzle versions change.
 
+## Safe failure diagnostics
+
+The CLI reports a fixed stage label and sanitized category before its existing no-blind-retry warning. For example (illustration, not a diagnosis of a real run):
+
+```text
+Failed stage: Database connection. Category: TLS_CERTIFICATE_VERIFICATION.
+Failed stage: Table locking. Category: TRANSACTION_CONTENTION. PostgreSQL code: 55P03.
+```
+
+Reported stages distinguish database checkout/connection, transaction initialization (BEGIN and SET LOCAL), auth table verification, table locking, existing-user check, Better Auth signup, credential verification, transaction commit, and connection cleanup. Configuration/credential failures before connection have their own input-validation stage. Idle-pool errors retain a safe diagnosis rather than being reduced to a generic cancellation.
+
+Only explicitly allowlisted PostgreSQL SQLSTATE codes are printed. Known TLS, DNS, timeout, connection, cancellation and Better Auth rejections receive fixed categories. Unknown errors become `UNCLASSIFIED`; raw exception messages, stacks, certificate subjects/hostnames, API bodies, SQL, parameters and connection strings are never printed. Known precondition failures receive fixed explanatory hints, not forwarded exception messages. The original driver exception is not attached to the reported failure.
+
+Drizzle's nested `cause` is inspected in a bounded walk to recover a code safely. Installed Drizzle checks out a connection before BEGIN: a wrapped query failure before the transaction callback is categorized as transaction initialization, while an unwrapped checkout/TLS failure is categorized as database connection. The transaction callback marks commit only after all verification and cancellation checks pass; it still uses the original transaction/locking protocol.
+
+Better Auth can intentionally replace a failed user insert with a generic API rejection and discard its driver cause. Such failures report `Better Auth signup / AUTH_SIGNUP_REJECTED`, without inventing a PostgreSQL code. Secondary rollback errors may also be suppressed by the installed Drizzle implementation; diagnostics identify the original failing stage, not a guarantee that every cleanup error was observable.
+
+### Session Pooler and TLS investigation
+
+Supabase's documented Session Pooler uses the exact dashboard-supplied host, normally port 5432, and a project-qualified username such as `postgres.PROJECT_REF`. Session mode supports the transaction and session features used here. Do not substitute a direct-database username or another project's username, and do not automatically change the independently approved connection identity.
+
+Offline tests construct (but never connect) the installed `pg` client to establish that a Session Pooler-shaped URL preserves host, port, database and project-qualified username and enables certificate verification for `sslmode=verify-full`. Installed `pg` source passes the hostname to TLS/SNI for server-identity validation. There is no demonstrated Session Pooler incompatibility in the transaction code.
+
+A real TLS handshake still depends on network reachability, runtime trust roots, the server certificate chain, and hostname agreement. If the category is `TLS_CERTIFICATE_VERIFICATION`, have PM review the actual Bun runtime's trusted CA configuration and the approved hostname. Do not change to `sslmode=require`, use `rejectUnauthorized: false`, disable TLS validation, or add unapproved URL options to get past it. The CLI's existing URL option allowlist remains unchanged.
+
+Other useful categories include `DATABASE_AUTHENTICATION` (review credentials and pooler username privately), `DATABASE_PERMISSION`/`AUTH_SCHEMA_MISMATCH` (review approved migration and role permissions), `TRANSACTION_CONTENTION` (stop other writers and inspect locks under separate approval), and `DATABASE_SERVER_ERROR`/`XX000` (generic server/pooler rejection, not proof of a specific cause).
+
+The PM-reported empty user/account/session counts after a failed attempt establish that no owner persisted in that checked target. They do **not** identify which stage failed, establish a TLS cause, or prove a code/driver defect. An instrumented retry requires separate PM authorization; no provisioning attempt or database connection was made during diagnostic implementation.
+
 ## Failure and rerun policy
 
 A successful run reports only that the owner/credential were verified and no bootstrap session was created. Subsequent runs must refuse the existing user.

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { PassThrough, Writable } from "node:stream";
 import { test } from "node:test";
 
+import { describeProvisioningFailure } from "@solyn/auth/provision-owner";
+
 import { askQuestion } from "./provision-owner";
 
 function terminal() {
@@ -47,7 +49,14 @@ test("Ctrl-C cancels hidden input without printing the partially typed password"
   const io = terminal();
   const answer = askQuestion("Password: ", true, new AbortController().signal, io);
   io.input.write("partial-secret\x03");
-  await assert.rejects(answer, { name: "AbortError" });
+  await assert.rejects(answer, (error) => {
+    assert.ok(error instanceof Error);
+    assert.equal(error.name, "AbortError");
+    const diagnostic = describeProvisioningFailure(error, "input-validation");
+    assert.match(diagnostic, /Category: CANCELLED/);
+    assert.ok(!diagnostic.includes("partial-secret"));
+    return true;
+  });
   assert.equal(io.printed(), "Password: \n");
   assert.equal(io.raw.at(-1), false);
   assert.equal(io.input.isPaused(), true);

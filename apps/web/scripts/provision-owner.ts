@@ -4,9 +4,12 @@ import { Writable, type Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 import {
+  describeProvisioningFailure,
   ownerInput,
   provisionOwner,
   ProvisioningError,
+  ProvisioningFailure,
+  type ProvisioningStage,
   validateDevelopmentTarget,
 } from "@solyn/auth/provision-owner";
 import { createDb, type Database } from "@solyn/db";
@@ -69,8 +72,17 @@ async function main() {
   let password = "",
     confirmation = "";
   let completed = false;
+  let stage: ProvisioningStage = "input-validation";
+  let poolFailure: ProvisioningFailure | undefined;
   const cancellation = new AbortController();
   const stop = () => cancellation.abort();
+  const onPoolError = (error: unknown) => {
+    poolFailure = new ProvisioningFailure(
+      completed ? "connection-cleanup" : "database-connection",
+      error,
+    );
+    stop();
+  };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
   try {
@@ -101,25 +113,34 @@ async function main() {
         "Invalid owner input. Use a name, valid email and an 8–128 character nonblank password.",
       );
     cancellation.signal.throwIfAborted();
+    stage = "database-connection";
     database = createDb(config);
     // Set before the first checkout; Pool.options is the existing pg driver's
     // public configuration. Bound connection attempts without another DB layer.
     database.$client.options.connectionTimeoutMillis = 10_000;
-    database.$client.on("error", stop); // Never dump driver error objects/secrets.
+    database.$client.on("error", onPoolError); // Retain only an allowlisted diagnosis.
     await provisionOwner(database, config, input, cancellation.signal);
+    if (poolFailure) throw poolFailure;
     completed = true;
   } catch (error) {
     process.exitCode = 1;
-    console.error(error instanceof ProvisioningError ? error.message : uncertain);
+    console.error(`${describeProvisioningFailure(poolFailure ?? error, stage)} ${uncertain}`);
   } finally {
     password = confirmation = "";
     if (input) input.password = "";
     try {
       await database?.$client.end();
-    } catch {
+      if (completed && poolFailure) {
+        completed = false;
+        process.exitCode = 1;
+        console.error(
+          `${describeProvisioningFailure(poolFailure, "connection-cleanup")} ${uncertain}`,
+        );
+      }
+    } catch (error) {
       completed = false;
       process.exitCode = 1;
-      console.error(uncertain);
+      console.error(`${describeProvisioningFailure(error, "connection-cleanup")} ${uncertain}`);
     }
     process.off("SIGINT", stop);
     process.off("SIGTERM", stop);
@@ -131,8 +152,8 @@ async function main() {
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
-  void main().catch(() => {
+  void main().catch((error: unknown) => {
     process.exitCode = 1;
-    console.error(uncertain);
+    console.error(`${describeProvisioningFailure(error, "connection-cleanup")} ${uncertain}`);
   });
 }
