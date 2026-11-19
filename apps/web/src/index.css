@@ -3,6 +3,10 @@
 @theme inline {
   --font-sans: var(--font-geist-sans), sans-serif;
   --font-mono: var(--font-geist-mono), monospace;
+  --color-canvas: var(--canvas);
+  --color-button: var(--button);
+  --color-button-hover: var(--button-hover);
+  --color-button-border: var(--button-border);
 }
 
 :root,
@@ -146,7 +150,6 @@ fieldset {
 .wordmark > span {
   color: #4f7cff;
 }
-.control[data-slot="button"],
 .primary-link,
 .secondary-link {
   min-height: 32px;
@@ -167,27 +170,20 @@ fieldset {
     border-color 120ms;
 }
 .primary-link,
-.secondary-link,
-.control[data-slot="button"]:is(.bg-primary, .bg-secondary) {
+.secondary-link {
   background: var(--button);
   border: 1px solid var(--button-border);
   color: var(--foreground);
   box-shadow: inset 0 1px rgba(255, 255, 255, 0.045);
 }
 .primary-link:hover,
-.secondary-link:hover,
-.control[data-slot="button"]:is(.bg-primary, .bg-secondary):hover {
+.secondary-link:hover {
   background: var(--button-hover);
 }
 .primary-link:active,
-.secondary-link:active,
-.control[data-slot="button"]:is(.bg-primary, .bg-secondary):active {
+.secondary-link:active {
   background: var(--secondary);
   translate: none;
-}
-.control[data-slot="button"]:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
 }
 .text-link {
   color: #b2c7ff;
@@ -498,42 +494,19 @@ fieldset {
   display: grid;
   gap: 9px;
 }
-.field [data-slot="label"] {
-  font-size: 14px;
-  color: var(--foreground);
-}
 .required-hint {
   color: var(--muted-foreground);
   font-size: 12px;
   font-weight: 400;
 }
-.form-control[data-slot] {
-  background: var(--canvas);
-  border: 1px solid var(--input);
-  border-radius: 7px;
-  color: var(--foreground);
-  font-size: 16px;
-  line-height: 1.6;
-  padding: 7px 10px;
-  min-height: 38px;
-  height: auto;
-  /* Fields use their existing border instead of the global focus outline or shared rings. */
+/* Shared fields use their border, not the global important keyboard outline. */
+[data-slot="input"],
+[data-slot="textarea"] {
   outline: none !important;
-  box-shadow: none;
-  transition: border-color 120ms;
 }
-.form-control[data-slot]:focus {
-  border-color: var(--ring);
-}
-.form-control[data-slot][aria-invalid="true"] {
+/* Keep editor-specific error precedence over its unlayered transparent borders. */
+.form-control[data-slot]:is(.title-input, .writing-area)[aria-invalid="true"] {
   border-color: #ffb4bb;
-}
-.form-control[data-slot]::placeholder {
-  color: var(--muted-foreground);
-  opacity: 1;
-}
-.form-control[data-slot]:disabled {
-  opacity: 0.7;
 }
 .description-input[data-slot] {
   min-height: 160px;
@@ -1114,7 +1087,6 @@ fieldset {
   .nav-item {
     min-height: 44px;
   }
-  .control[data-slot="button"],
   .primary-link,
   .secondary-link {
     min-height: 44px;
@@ -1147,7 +1119,9 @@ fieldset {
   .project-form {
     margin-top: 24px;
   }
-  .form-control[data-slot] {
+  /* Preserve the existing mobile overrides for context-sized textareas. */
+  .description-input[data-slot],
+  .saved-comparison[data-slot] {
     min-height: 44px;
   }
   .writing-area[data-slot] {
@@ -1192,11 +1166,15 @@ fieldset {
   }
 }
 @media (pointer: coarse) {
-  .control[data-slot="button"],
+  /* These unlayered context sizes previously yielded to the shared touch target rule. */
+  .description-input[data-slot],
+  .writing-area[data-slot],
+  .saved-comparison[data-slot] {
+    min-height: 44px;
+  }
   .primary-link,
   .secondary-link,
-  .nav-item,
-  .form-control[data-slot] {
+  .nav-item {
     min-height: 44px;
   }
 }
