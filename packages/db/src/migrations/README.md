@@ -75,3 +75,9 @@ References reviewed: [Supabase changelog](https://supabase.com/changelog.md) and
 ### Remaining execution gate
 
 PM must approve the exact non-production target, Phase 1 baseline compatibility, exposure/grant/RLS plan, this SQL, and the ten-minute pending-turn recovery policy before rollout. Review backup/recovery and a disposable-development integration plan covering FK/CHECK/unique enforcement, real simultaneous turn requests, rollback, and interrupted/ambiguous commits. No migration, SQL execution, provisioning, or database connection was performed for Phase 2B.
+
+## P3.1 note proposal migration review — NOT APPLIED
+
+`bun run db:generate --name note_proposals` generated `20261119144819_note_proposals/{migration.sql,snapshot.json}` offline using the unchanged config/Kit workflow. The v9 diff extends the chat snapshot and creates only `note_proposals`: 14 columns, PK, source-message UNIQUE, three CHECKs and three RESTRICT FKs. No standalone index, existing-table modification, data write, permission change or migration execution is included. Both previous migrations remain untouched.
+
+See [the proposal schema and application contract](../../../../docs/NOTE_PROPOSALS.md) for exact columns, derived source/owner mapping, receipt invariants, future atomic chat/confirmation contracts and verification limits. Runtime tool/SSE/UI/service changes are not implemented. Before application, PM must separately approve the exact target/history compatibility and current Data API/default-grant/backend-role protections; this `public` table has no RLS policy in the generated SQL. Do not assume historical Data API disablement proves current privileges, or map Better Auth users to Supabase Auth `auth.uid()`.
