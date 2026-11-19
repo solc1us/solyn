@@ -14,7 +14,7 @@ export default function SignOutButton() {
       <Button
         type="button"
         variant="ghost"
-        className="control sign-out"
+        className="control sign-out w-full justify-start text-muted-foreground hover:text-muted-foreground"
         disabled={pending}
         onClick={async () => {
           if (

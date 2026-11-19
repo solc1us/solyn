@@ -1,3 +1,5 @@
+import { buttonVariants } from "@solyn/ui/components/button";
+import { cn } from "@solyn/ui/lib/utils";
 import { Plus, Pencil, MessageSquare } from "lucide-react";
 import Link from "next/link";
 
@@ -18,33 +20,48 @@ export default async function ProjectPage({ params }: { params: Promise<{ projec
   const notes = routeData(notesResult);
   if (!project || !notes) return <RetryPanel />;
   return (
-    <div className="page-content">
+    <div className="page-content px-[24px] pt-[20px] pb-[40px] [@media(max-width:760px)]:[padding:20px_max(16px,env(safe-area-inset-right))_max(40px,env(safe-area-inset-bottom))_max(16px,env(safe-area-inset-left))]">
       <Breadcrumbs current={project.name} />
-      <header className="page-heading">
-        <div>
-          <h1>{project.name}</h1>
+      <header className="page-heading -mx-[24px] mb-[20px] flex min-h-[40px] items-center justify-between gap-[16px] border-b border-border px-[24px] pb-[16px] [@media(min-width:761px)]:sticky [@media(min-width:761px)]:top-0 [@media(min-width:761px)]:z-10 [@media(min-width:761px)]:-mt-[20px] [@media(min-width:761px)]:bg-canvas [@media(min-width:761px)]:pt-[20px] [@media(max-width:1100px)]:flex-wrap [@media(max-width:760px)]:mx-0 [@media(max-width:760px)]:mb-[16px] [@media(max-width:760px)]:gap-[12px] [@media(max-width:760px)]:px-0">
+        <div className="min-w-0">
+          <h1 className="text-[16px] tracking-[-0.015em]">{project.name}</h1>
         </div>
-        <div className="inline-actions">
-          <Link href={`/chat?projectId=${project.id}`} className="secondary-link">
-            <MessageSquare size={15} aria-hidden="true" />
+        <div className="flex flex-wrap items-center gap-[8px]">
+          <Link
+            href={`/chat?projectId=${project.id}`}
+            className={cn(buttonVariants(), "bg-clip-border select-auto")}
+          >
+            <MessageSquare size={15} className="size-[15px]" aria-hidden="true" />
             Ask Solyn
           </Link>
-          <Link href={`/projects/${project.id}/edit`} className="secondary-link">
-            <Pencil size={15} aria-hidden="true" />
+          <Link
+            href={`/projects/${project.id}/edit`}
+            className={cn(buttonVariants(), "bg-clip-border select-auto")}
+          >
+            <Pencil size={15} className="size-[15px]" aria-hidden="true" />
             Edit project
           </Link>
-          <Link href={`/projects/${project.id}/notes/new`} className="primary-link">
-            <Plus size={17} aria-hidden="true" />
+          <Link
+            href={`/projects/${project.id}/notes/new`}
+            className={cn(buttonVariants(), "bg-clip-border select-auto")}
+          >
+            <Plus size={17} className="size-[17px]" aria-hidden="true" />
             New note
           </Link>
         </div>
       </header>
       <div className="project-summary">
-        {project.description ? <p className="project-description">{project.description}</p> : null}
-        <p className="metadata">Created {formatDate(project.createdAt)}</p>
+        {project.description ? (
+          <p className="project-description mt-[8px] max-w-[64ch] leading-[1.6] whitespace-pre-wrap text-muted-foreground [overflow-wrap:anywhere]">
+            {project.description}
+          </p>
+        ) : null}
+        <p className="metadata mt-[16px] max-w-[64ch] text-[12px] leading-[1.6] text-muted-foreground">
+          Created {formatDate(project.createdAt)}
+        </p>
       </div>
-      <div className="section-heading">
-        <h2>Notes</h2>
+      <div className="section-heading mt-[24px] mb-[12px] flex flex-wrap items-baseline justify-between gap-[12px]">
+        <h2 className="text-[14px]">Notes</h2>
       </div>
       <Collection key={listKey(notes)} projectId={project.id} initial={notes.map(noteRow)} />
     </div>

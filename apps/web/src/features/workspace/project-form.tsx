@@ -29,7 +29,7 @@ export default function ProjectForm({ initial }: { initial?: Project }) {
 
   return (
     <form
-      className="project-form"
+      className="project-form mt-[28px] w-full [@media(max-width:760px)]:mt-[24px]"
       noValidate
       data-unsaved={dirty}
       aria-busy={pending}
@@ -70,10 +70,13 @@ export default function ProjectForm({ initial }: { initial?: Project }) {
         }
       }}
     >
-      <fieldset disabled={pending} className="form-fields">
-        <div className="field">
+      <fieldset disabled={pending} className="form-fields grid gap-[20px]">
+        <div className="field grid gap-[9px]">
           <Label htmlFor="project-name">
-            Project name <span className="required-hint">(required)</span>
+            Project name{" "}
+            <span className="required-hint text-[12px] font-normal text-muted-foreground">
+              (required)
+            </span>
           </Label>
           <Input
             id="project-name"
@@ -90,14 +93,17 @@ export default function ProjectForm({ initial }: { initial?: Project }) {
           />
           <FieldError id="project-name-error" message={errors.name} />
         </div>
-        <div className="field">
+        <div className="field grid gap-[9px]">
           <Label htmlFor="project-description">
-            Description <span className="required-hint">(optional)</span>
+            Description{" "}
+            <span className="required-hint text-[12px] font-normal text-muted-foreground">
+              (optional)
+            </span>
           </Label>
           <Textarea
             id="project-description"
             name="description"
-            className="form-control description-input"
+            className="form-control description-input min-h-[160px] resize-y"
             value={description}
             onChange={(event) => setDescription(event.target.value)}
             maxLength={5000}
@@ -106,7 +112,10 @@ export default function ProjectForm({ initial }: { initial?: Project }) {
             autoComplete="off"
             placeholder="What is this project about?"
           />
-          <p id="project-description-help" className="field-help">
+          <p
+            id="project-description-help"
+            className="field-help text-[12px] leading-[1.6] text-muted-foreground"
+          >
             Optional context for this project.
           </p>
           <FieldError id="project-description-error" message={errors.description} />
@@ -114,19 +123,22 @@ export default function ProjectForm({ initial }: { initial?: Project }) {
       </fieldset>
       {error ? <MutationError code={error} /> : null}
       {error === "UNAVAILABLE" && !saved ? (
-        <p className="field-help">
+        <p className="field-help text-[12px] leading-[1.6] text-muted-foreground">
           Check your projects before retrying, in case the project was created.
         </p>
       ) : null}
-      <div className="form-footer">
-        <Link className="text-link" href={saved ? `/projects/${saved.id}` : "/projects"}>
+      <div className="form-footer mt-[32px] mb-[14px] flex items-center justify-between gap-[16px] border-t border-border pt-[24px]">
+        <Link
+          className="text-[#b2c7ff] [&:hover]:underline"
+          href={saved ? `/projects/${saved.id}` : "/projects"}
+        >
           Cancel
         </Link>
         <Button className="control" type="submit" disabled={pending || (!!saved && !dirty)}>
           {pending ? "Saving…" : saved ? "Save changes" : "Create project"}
         </Button>
       </div>
-      <p role="status" className="field-help">
+      <p role="status" className="field-help text-[12px] leading-[1.6] text-muted-foreground">
         {pending ? "Saving your project…" : dirty ? "You have unsaved changes." : ""}
       </p>
     </form>

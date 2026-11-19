@@ -50,7 +50,7 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
   return (
     <div className="editor-wrap">
       <form
-        className="note-editor"
+        className="note-editor m-0 w-full max-w-[760px]"
         noValidate
         data-unsaved={dirty}
         aria-busy={pending}
@@ -101,8 +101,8 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
           }
         }}
       >
-        <div className="editor-toolbar">
-          <p className="save-indicator" role="status">
+        <div className="editor-toolbar mb-[20px] flex items-center justify-between gap-[16px] pb-[16px] [@media(max-width:760px)]:gap-[10px]">
+          <p className="save-indicator text-[13px] text-muted-foreground" role="status">
             {pending
               ? loadingLatest
                 ? "Loading…"
@@ -123,15 +123,18 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
             {saving ? "Saving…" : state.saved ? "Save changes" : "Create note"}
           </Button>
         </div>
-        <fieldset disabled={pending} className="editor-fields">
-          <div className="field">
+        <fieldset disabled={pending} className="editor-fields grid gap-[24px]">
+          <div className="field grid gap-[9px]">
             <Label htmlFor="note-title">
-              Title <span className="required-hint">(required)</span>
+              Title{" "}
+              <span className="required-hint text-[12px] font-normal text-muted-foreground">
+                (required)
+              </span>
             </Label>
             <Input
               id="note-title"
               name="title"
-              className="form-control title-input"
+              className="form-control title-input rounded-none border-transparent px-0 py-[8px] text-[23px] font-[550] tracking-[-0.025em] [@media(max-width:760px)]:text-[21px]"
               value={state.draft.title}
               onChange={(event) => change("title", event.target.value)}
               maxLength={300}
@@ -143,15 +146,18 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
             />
             <FieldError id="note-title-error" message={errors.title} />
           </div>
-          <div className="field date-field">
+          <div className="field date-field grid max-w-[440px] gap-[9px]">
             <Label htmlFor="note-date">
-              Note date <span className="required-hint">(optional)</span>
+              Note date{" "}
+              <span className="required-hint text-[12px] font-normal text-muted-foreground">
+                (optional)
+              </span>
             </Label>
             <Input
               id="note-date"
               name="noteDate"
               type="date"
-              className="form-control"
+              className="form-control max-w-[220px]"
               min="0001-01-01"
               max="9999-12-31"
               value={state.draft.noteDate}
@@ -160,19 +166,25 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
               aria-describedby={`note-date-help${errors.noteDate ? " note-date-error" : ""}`}
               autoComplete="off"
             />
-            <p id="note-date-help" className="field-help">
+            <p
+              id="note-date-help"
+              className="field-help text-[12px] leading-[1.6] text-muted-foreground"
+            >
               When it happened, if known. Not the date this note was created.
             </p>
             <FieldError id="note-date-error" message={errors.noteDate} />
           </div>
-          <div className="field content-field">
+          <div className="field content-field grid gap-[9px]">
             <Label htmlFor="note-content">
-              Note <span className="required-hint">(required)</span>
+              Note{" "}
+              <span className="required-hint text-[12px] font-normal text-muted-foreground">
+                (required)
+              </span>
             </Label>
             <Textarea
               id="note-content"
               name="content"
-              className="form-control writing-area"
+              className="form-control writing-area field-sizing-fixed min-h-[420px] resize-y rounded-none border-transparent px-0 py-[12px] text-[17px] leading-[1.65] [@media(max-width:760px)]:min-h-[420px] [@media(max-width:760px)]:text-[16px]"
               value={state.draft.content}
               onChange={(event) => change("content", event.target.value)}
               maxLength={100000}
@@ -183,7 +195,10 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
               aria-describedby={`note-content-help${errors.content ? " note-content-error" : ""}`}
               autoComplete="off"
             />
-            <p id="note-content-help" className="field-help">
+            <p
+              id="note-content-help"
+              className="field-help text-[12px] leading-[1.6] text-muted-foreground"
+            >
               Plain text. Formatting and whitespace stay as you write them.
             </p>
             <FieldError id="note-content-error" message={errors.content} />
@@ -195,7 +210,7 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
             {state.saved ? (
               <Button
                 type="button"
-                className="control"
+                className="control mt-[14px]"
                 variant="secondary"
                 disabled={pending}
                 onClick={loadLatest}
@@ -203,10 +218,10 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
                 {loadingLatest ? "Loading…" : "Check latest saved version"}
               </Button>
             ) : (
-              <p className="field-help">
+              <p className="field-help text-[12px] leading-[1.6] text-muted-foreground">
                 Before retrying an uncertain save,{" "}
                 <Link
-                  className="text-link"
+                  className="text-[#b2c7ff] [&:hover]:underline"
                   href={`/projects/${projectId}`}
                   target="_blank"
                   rel="noopener noreferrer"
@@ -220,18 +235,21 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
         ) : null}
         {reloadError ? <MutationError code={reloadError} /> : null}
         {latest ? (
-          <section className="latest-version" aria-label="Latest saved version">
+          <section
+            className="latest-version mt-[26px] grid gap-[14px] border-t border-border pt-[24px]"
+            aria-label="Latest saved version"
+          >
             <h2>Latest saved version</h2>
-            <p>
+            <p className="text-muted-foreground">
               Version {latest.version}. Your draft above is unchanged. Copy anything you want to
               keep before replacing it.
             </p>
-            <h3>{latest.title}</h3>
-            <p className="field-help">
+            <h3 className="[overflow-wrap:anywhere]">{latest.title}</h3>
+            <p className="field-help text-[12px] leading-[1.6] text-muted-foreground">
               Note date: {latest.noteDate ? formatDate(latest.noteDate) : "Not set"}
             </p>
             <Textarea
-              className="form-control saved-comparison"
+              className="form-control saved-comparison field-sizing-fixed min-h-[200px] resize-y leading-[1.7]"
               readOnly
               value={latest.content}
               aria-label="Latest saved note content"
@@ -239,7 +257,7 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
             <Button
               type="button"
               variant="secondary"
-              className="control"
+              className="control justify-self-start"
               disabled={pending}
               onClick={() => {
                 if (
@@ -259,7 +277,7 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
             </Button>
           </section>
         ) : null}
-        <footer className="editor-metadata">
+        <footer className="editor-metadata mt-[28px] flex flex-wrap gap-x-[22px] gap-y-[10px] border-t border-border pt-[18px] text-[12px] text-muted-foreground">
           {state.saved ? (
             <>
               <span>Created {formatDate(state.saved.createdAt)}</span>

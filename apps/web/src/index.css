@@ -97,42 +97,45 @@ summary {
 a {
   text-underline-offset: 4px;
 }
-h1,
-h2,
-h3,
-p {
-  margin: 0;
-}
-h1 {
-  scroll-margin-top: 6rem;
-  font-size: 28px;
-  font-weight: 600;
-  letter-spacing: -0.035em;
-  line-height: 1.25;
-  overflow-wrap: anywhere;
-  text-wrap: balance;
-}
-h2 {
-  font-size: 19px;
-  font-weight: 550;
-  letter-spacing: -0.02em;
-}
-h3 {
-  font-weight: 550;
+/* Typography defaults belong below owner utilities; unlayered Chat rules still win. */
+@layer base {
+  h1,
+  h2,
+  h3,
+  p {
+    margin: 0;
+  }
+  h1 {
+    scroll-margin-top: 6rem;
+    font-size: 28px;
+    font-weight: 600;
+    letter-spacing: -0.035em;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+    text-wrap: balance;
+  }
+  h2 {
+    font-size: 19px;
+    font-weight: 550;
+    letter-spacing: -0.02em;
+  }
+  h3 {
+    font-weight: 550;
+  }
+  @media (max-width: 760px) {
+    h1 {
+      font-size: 26px;
+    }
+  }
 }
 fieldset {
   border: 0;
   padding: 0;
   min-width: 0;
 }
-.surface {
-  background: var(--canvas);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-}
+/* Shell owners supply borders/geometry; preserve the shared glass support fallback. */
 .glass {
   background: var(--sidebar);
-  border: 1px solid var(--border);
   box-shadow: 0 16px 48px #02061126;
 }
 @supports (backdrop-filter: blur(16px)) {
@@ -141,15 +144,7 @@ fieldset {
     backdrop-filter: blur(16px);
   }
 }
-.wordmark {
-  font-size: 30px;
-  font-weight: 650;
-  letter-spacing: -0.065em;
-  line-height: 1;
-}
-.wordmark > span {
-  color: #4f7cff;
-}
+/* R3 ownership: Chat still consumes legacy action links and action groups. */
 .primary-link,
 .secondary-link {
   min-height: 32px;
@@ -185,351 +180,27 @@ fieldset {
   background: var(--secondary);
   translate: none;
 }
-.text-link {
-  color: #b2c7ff;
-}
-.text-link:hover {
-  text-decoration: underline;
-}
 .inline-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
 }
-.workspace-shell {
-  min-height: 100vh;
-}
-.skip-link {
-  position: fixed;
-  top: 10px;
-  left: 15px;
-  z-index: 100;
-  background: #eff4ff;
-  color: #080f20;
-  padding: 10px 16px;
-  border-radius: 5px;
-  transform: translateY(-160%);
-}
-.skip-link:focus {
-  transform: translateY(0);
-}
-.sidebar {
-  position: fixed;
-  left: 16px;
-  top: 16px;
-  bottom: 16px;
-  width: 248px;
-  border-radius: 12px;
-  padding: 24px 12px 12px;
-  display: flex;
-  flex-direction: column;
-  z-index: 20;
-  overflow-y: auto;
-}
-.sidebar-brand {
-  display: inline-flex;
-  width: fit-content;
-  padding: 0 10px;
-}
-.sidebar-caption {
-  color: var(--muted-foreground);
-  margin: 16px 10px 24px;
-  font-size: 12px;
-}
-.sidebar nav {
-  display: grid;
-  gap: 3px;
-}
-.nav-item {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  min-height: 36px;
-  padding: 7px 12px;
-  border-radius: 7px;
-  color: var(--muted-foreground);
-  font-size: 14px;
-}
-.nav-item:hover {
-  color: var(--foreground);
-  background: var(--hover);
-}
-.nav-item[aria-current="page"] {
-  color: var(--foreground);
-  background: var(--selected);
-  box-shadow: inset 2px 0 var(--brand);
-}
-.sidebar-bottom {
-  margin-top: auto;
-  padding-top: 32px;
-}
-.account {
-  padding: 16px 8px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  min-width: 0;
-}
-.avatar {
-  width: 32px;
-  height: 32px;
-  flex-shrink: 0;
-  border-radius: 50%;
-  background: var(--button);
-  color: var(--foreground);
-  display: grid;
-  place-items: center;
-  font-size: 13px;
-}
-.account > div {
-  min-width: 0;
-}
-.account p {
-  font-size: 13px;
-  overflow-wrap: anywhere;
-}
-.account div > span {
-  display: block;
-  font-size: 12px;
-  color: var(--muted-foreground);
-  overflow-wrap: anywhere;
-}
-.sign-out {
-  width: 100%;
-  color: var(--muted-foreground);
-  justify-content: flex-start !important;
-}
-.mobile-header {
-  display: none;
-}
-.workspace-main {
-  margin: 16px 16px 16px 280px;
-  min-width: 0;
-  min-height: calc(100vh - 32px);
-  background: var(--canvas);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-}
-.page-content {
-  padding: 20px 24px 40px;
-}
-.page-heading {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-  min-height: 40px;
-  margin: 0 -24px 20px;
-  padding: 0 24px 16px;
-  border-bottom: 1px solid var(--border);
-}
-.page-heading h1 {
-  font-size: 16px;
-  letter-spacing: -0.015em;
-}
-.page-heading > div:first-child {
-  min-width: 0;
-}
-.page-heading p,
-.project-summary p {
-  margin-top: 8px;
-  max-width: 64ch;
-  color: var(--muted-foreground);
-  line-height: 1.6;
-}
-.section-heading {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin: 24px 0 12px;
-}
-.section-heading h2 {
-  font-size: 14px;
-}
-.collection {
-  overflow: clip;
-}
-.collection-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-.collection-list > li {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 60px;
-}
-.collection-row {
-  display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) auto 16px;
-  gap: 12px;
-  align-items: center;
-  padding: 10px 12px;
-  min-height: 48px;
-  border-radius: 7px;
-  transition: background-color 120ms;
-}
-.collection-row:hover {
-  background: var(--hover);
-}
+/* Keep row focus inside overflow:clip without changing the global keyboard outline. */
 .collection-row:focus-visible {
   outline-offset: -4px;
-}
-.item-icon {
-  width: 20px;
-  height: 24px;
-  display: grid;
-  place-items: center;
-  color: var(--muted-foreground);
-}
-.item-copy {
-  min-width: 0;
-}
-.item-copy .item-title {
-  display: block;
-  font-weight: 550;
-  font-size: 14px;
-  overflow-wrap: anywhere;
-}
-.item-copy p {
-  color: var(--muted-foreground);
-  font-size: 13px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  margin-top: 2px;
-}
-.collection-row time {
-  font-variant-numeric: tabular-nums;
-  color: var(--muted-foreground);
-  font-size: 12px;
-  white-space: nowrap;
-}
-.row-chevron {
-  color: var(--muted-foreground);
-}
-.collection-footer {
-  padding: 16px 12px;
-  min-height: 48px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-.collection-footer > span {
-  color: var(--muted-foreground);
-  font-size: 12px;
-}
-.collection-feedback {
-  padding: 16px 24px;
-  color: #ffb4bb;
-}
-.collection-feedback a {
-  text-decoration: underline;
-}
-.empty-state {
-  text-align: center;
-  max-width: 520px;
-  margin: 0 auto;
-  padding: 72px 30px;
-}
-.empty-state > svg {
-  color: var(--muted-foreground);
-  margin: 0 auto 16px;
-}
-.empty-state .secondary-link {
-  margin-top: 16px;
-}
-.empty-state p {
-  color: var(--muted-foreground);
-  line-height: 1.75;
-}
-.breadcrumbs {
-  color: var(--muted-foreground);
-  font-size: 13px;
-  margin-bottom: 16px;
-}
-.breadcrumbs ol {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  list-style: none;
-  padding: 0;
-}
-.breadcrumbs li {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.breadcrumbs a:hover {
-  color: #eff4ff;
-  text-decoration: underline;
-}
-.breadcrumbs [aria-current="page"] {
-  color: #d4def2;
-}
-.project-description {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.page-heading .metadata,
-.project-summary .metadata {
-  font-size: 12px;
-  margin-top: 16px;
-}
-.project-form {
-  width: 100%;
-  margin: 28px 0 0;
-}
-.form-fields {
-  display: grid;
-  gap: 20px;
-}
-.field {
-  display: grid;
-  gap: 9px;
-}
-.required-hint {
-  color: var(--muted-foreground);
-  font-size: 12px;
-  font-weight: 400;
 }
 /* Shared fields use their border, not the global important keyboard outline. */
 [data-slot="input"],
 [data-slot="textarea"] {
   outline: none !important;
 }
-/* Keep editor-specific error precedence over its unlayered transparent borders. */
-.form-control[data-slot]:is(.title-input, .writing-area)[aria-invalid="true"] {
-  border-color: #ffb4bb;
+/* Document fields focus only their underline; primitive invalid borders remain in charge. */
+.form-control[data-slot]:is(.title-input, .writing-area):focus:not([aria-invalid="true"]) {
+  border-color: transparent;
+  border-bottom-color: var(--ring);
 }
-.description-input[data-slot] {
-  min-height: 160px;
-  resize: vertical;
-}
-.field-help {
-  color: var(--muted-foreground);
-  font-size: 12px;
-  line-height: 1.6;
-}
-.field-error {
-  color: #ffb4bb;
-  font-size: 13px;
-}
-.form-footer {
-  margin: 32px 0 14px;
-  padding-top: 24px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-}
+/* R3 ownership: Chat's inline errors still use these shared feedback selectors. */
 .feedback {
   padding: 14px 16px;
   border: 1px solid;
@@ -547,211 +218,8 @@ fieldset {
   border-color: #71404c;
   color: #ffd2d7;
 }
-.note-editor {
-  width: 100%;
-  max-width: 760px;
-  margin: 0;
-}
-.editor-toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-  padding-bottom: 16px;
-  margin-bottom: 20px;
-}
-.save-indicator {
-  font-size: 13px;
-  color: var(--muted-foreground);
-}
-.editor-fields {
-  display: grid;
-  gap: 24px;
-}
-.title-input[data-slot] {
-  font-size: 23px;
-  font-weight: 550;
-  letter-spacing: -0.025em;
-  padding: 8px 0;
-  border-color: transparent;
-  border-radius: 0;
-}
-.date-field {
-  max-width: 440px;
-}
-.date-field input {
-  max-width: 220px;
-}
-.writing-area[data-slot] {
-  font-size: 17px;
-  line-height: 1.65;
-  min-height: 420px;
-  resize: vertical;
-  field-sizing: fixed;
-  padding: 12px 0;
-  border-color: transparent;
-  border-radius: 0;
-}
-.form-control[data-slot]:is(.title-input, .writing-area):focus:not([aria-invalid="true"]) {
-  border-color: transparent;
-  border-bottom-color: var(--ring);
-}
-.editor-metadata {
-  margin-top: 28px;
-  padding-top: 18px;
-  border-top: 1px solid var(--border);
-  display: flex;
-  gap: 10px 22px;
-  flex-wrap: wrap;
-  color: var(--muted-foreground);
-  font-size: 12px;
-}
-.editor-feedback > button {
-  margin-top: 14px;
-}
-.latest-version {
-  margin-top: 26px;
-  border-top: 1px solid var(--border);
-  padding-top: 24px;
-  display: grid;
-  gap: 14px;
-}
-.latest-version > p {
-  color: var(--muted-foreground);
-}
-.latest-version h3 {
-  overflow-wrap: anywhere;
-}
-.latest-version > button {
-  justify-self: start;
-}
-.saved-comparison[data-slot] {
-  min-height: 200px;
-  line-height: 1.7;
-  resize: vertical;
-  field-sizing: fixed;
-}
-.standalone-page {
-  width: min(740px, 100%);
-  margin: 0 auto;
-  padding: 12vh 24px;
-}
-.status-panel {
-  padding: 40px;
-}
-.status-panel > p {
-  color: var(--muted-foreground);
-  margin: 16px 0 26px;
-}
-.workspace-main .status-panel {
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-}
-.workspace-main .loading-surface {
-  background: transparent;
-  border: 0;
-}
-.loading-heading {
-  width: 160px;
-  height: 20px;
-  background: var(--button);
-  border-radius: 5px;
-  margin-bottom: 38px;
-}
-.loading-surface {
-  padding: 24px;
-}
-.loading-surface > div {
-  height: 50px;
-  background: var(--secondary);
-  border-radius: 6px;
-  margin: 12px 0;
-}
-.login-page {
-  max-width: 1200px;
-  margin: 0 auto;
-  min-height: 100svh;
-  padding: 72px 48px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 430px);
-  align-items: center;
-  gap: 100px;
-}
-.login-intro {
-  padding-bottom: 30px;
-}
-.login-intro h1 {
-  font-size: clamp(32px, 3.3vw, 46px);
-  font-weight: 550;
-  max-width: 480px;
-  line-height: 1.16;
-  letter-spacing: -0.045em;
-  margin-top: 60px;
-  text-wrap: balance;
-}
-.login-intro > p {
-  color: #a8b5d0;
-  max-width: 390px;
-  font-size: 16px;
-  line-height: 1.8;
-  margin-top: 24px;
-}
-.login-caption {
-  display: block;
-  color: #a8b5d0;
-  font-size: 12px;
-  margin-top: 70px;
-}
-.login-panel {
-  padding: 36px;
-  box-shadow: 0 20px 80px #03091455;
-}
-.login-panel-heading h2 {
-  font-size: 24px;
-}
-.login-panel-heading p {
-  color: #a8b5d0;
-  margin-top: 7px;
-}
-.login-form {
-  margin-top: 30px;
-}
-.login-submit {
-  width: 100%;
-  margin-top: 28px;
-}
-.login-access {
-  color: #a8b5d0;
-  font-size: 12px;
-  padding-top: 25px;
-  margin-top: 27px;
-  border-top: 1px solid var(--border);
-}
 
-.recent-conversations {
-  margin-top: 20px;
-}
-.recent-conversations > p {
-  color: var(--muted-foreground);
-  font-size: 12px;
-  margin: 0 12px 4px;
-}
-.recent-conversations .nav-item {
-  display: grid;
-  gap: 1px;
-  min-height: 42px;
-  font-size: 13px;
-}
-.recent-conversations .nav-item > span {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.recent-conversations small {
-  color: var(--muted-foreground);
-  font-size: 11px;
-}
+/* R3: Chat presentation is deliberately unchanged. Sidebar recents are owned by the shell. */
 .chat-screen {
   height: 100%;
   min-height: 0;
@@ -997,184 +465,23 @@ fieldset {
   .chat-input[data-slot] {
     font-size: 16px;
   }
-  .recent-conversations .nav-item {
-    min-height: 44px;
-  }
 }
 @media (min-width: 761px) {
+  /* R3 ownership: Chat's scroll exception must override the shell's canvas utilities. */
   .workspace-main.is-chat {
     overflow: hidden;
     scrollbar-gutter: auto;
   }
-  .workspace-main {
-    position: fixed;
-    inset: 16px 16px 16px 280px;
-    margin: 0;
-    min-height: 0;
-    overflow: auto;
-    scrollbar-gutter: stable;
-    scroll-padding-block: 8rem 24px;
-  }
-  .page-heading {
-    position: sticky;
-    top: 0;
-    z-index: 10;
-    margin-top: -20px;
-    padding-top: 20px;
-    background: var(--canvas);
-  }
-}
-@media (max-width: 1100px) {
-  .page-heading {
-    flex-wrap: wrap;
-  }
-  .login-page {
-    gap: 48px;
-  }
 }
 @media (max-width: 760px) {
-  .mobile-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: max(16px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) 16px
-      max(20px, env(safe-area-inset-left));
-    position: sticky;
-    top: 0;
-    z-index: 30;
-    border-width: 0 0 1px;
-  }
-  .mobile-header .wordmark {
-    font-size: 27px;
-  }
-  .sidebar {
-    display: none;
-    position: static;
-    width: auto;
-    margin: 12px 16px 0;
-    max-height: calc(100svh - 100px);
-  }
-  .sidebar.is-open {
-    display: flex;
-  }
-  .sidebar-brand {
-    display: none;
-  }
-  .sidebar-caption {
-    margin: 0 12px 18px;
-  }
-  .sidebar-bottom {
-    padding-top: 20px;
-  }
-  .workspace-main {
-    margin: 12px 0 0;
-    min-height: calc(100svh - 88px);
-    border-width: 1px 0 0;
-    border-radius: 10px 10px 0 0;
-  }
-  .page-content {
-    padding: 20px max(16px, env(safe-area-inset-right)) max(40px, env(safe-area-inset-bottom))
-      max(16px, env(safe-area-inset-left));
-  }
-  h1 {
-    font-size: 26px;
-  }
-  .page-heading {
-    gap: 12px;
-    margin: 0 0 16px;
-    padding: 0 0 16px;
-  }
-  .nav-item {
-    min-height: 44px;
-  }
   .primary-link,
   .secondary-link {
     min-height: 44px;
   }
-  .collection-row {
-    grid-template-columns: 20px minmax(0, 1fr) 16px;
-    gap: 2px 10px;
-    padding: 10px 8px;
-  }
-  .collection-row time {
-    grid-column: 2;
-    grid-row: 2;
-  }
-  .row-chevron {
-    grid-column: 3;
-    grid-row: 1 / 3;
-  }
-  .item-icon {
-    grid-row: 1 / 3;
-    width: 20px;
-    height: 24px;
-  }
-  .collection-footer {
-    padding: 14px 16px;
-    flex-wrap: wrap;
-  }
-  .empty-state {
-    padding: 48px 22px;
-  }
-  .project-form {
-    margin-top: 24px;
-  }
-  /* Preserve the existing mobile overrides for context-sized textareas. */
-  .description-input[data-slot],
-  .saved-comparison[data-slot] {
-    min-height: 44px;
-  }
-  .writing-area[data-slot] {
-    padding: 12px 0;
-    min-height: 420px;
-    font-size: 16px;
-  }
-  .editor-toolbar {
-    gap: 10px;
-  }
-  .title-input[data-slot] {
-    font-size: 21px;
-  }
-  .breadcrumbs {
-    margin-bottom: 22px;
-  }
-  .login-page {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 32px;
-    padding: 40px 24px;
-    max-width: 490px;
-  }
-  .login-intro {
-    padding: 0;
-  }
-  .login-intro h1 {
-    font-size: 32px;
-    margin-top: 32px;
-  }
-  .login-intro > p {
-    font-size: 14px;
-    margin-top: 14px;
-  }
-  .login-caption {
-    display: none;
-  }
-  .login-panel {
-    padding: 28px 24px;
-  }
-  .status-panel {
-    padding: 28px 22px;
-  }
 }
 @media (pointer: coarse) {
-  /* These unlayered context sizes previously yielded to the shared touch target rule. */
-  .description-input[data-slot],
-  .writing-area[data-slot],
-  .saved-comparison[data-slot] {
-    min-height: 44px;
-  }
   .primary-link,
-  .secondary-link,
-  .nav-item {
+  .secondary-link {
     min-height: 44px;
   }
 }

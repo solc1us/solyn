@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import { Button, buttonVariants } from "@solyn/ui/components/button";
@@ -7,6 +8,9 @@ import { Label } from "@solyn/ui/components/label";
 import { Textarea } from "@solyn/ui/components/textarea";
 import { renderToStaticMarkup } from "react-dom/server";
 
+import LoadingWorkspace from "../../app/(workspace)/loading";
+import WorkspaceNotFound from "../../app/(workspace)/not-found";
+import NotFound from "../../app/not-found";
 import { createNoteInput } from "./contracts";
 import { editorReducer, initialEditor, isDirty } from "./editor-state";
 import { Breadcrumbs, FieldError, MutationError } from "./feedback";
@@ -180,6 +184,129 @@ test("labels and editor/chat class hooks survive shared primitive class merging"
     <Textarea className="chat-input" />,
   ])
     assert.match(renderToStaticMarkup(field), /(?:title-input|writing-area|chat-input)/);
+});
+
+test("workspace loading retains its accessible announcement, canvas spacing and three skeleton rows", () => {
+  const html = renderToStaticMarkup(<LoadingWorkspace />).replaceAll("&amp;", "&");
+  assert.match(html, /role="status"/);
+  assert.match(html, /aria-busy="true"/);
+  assert.match(html, /Loading workspace…/);
+  assert.equal(html.split("h-[50px]").length - 1, 3);
+  assert.ok(html.includes("[.workspace-main_&]:bg-transparent"));
+  assert.ok(html.includes("[.workspace-main_&]:border-0"));
+  assert.ok(html.includes("env(safe-area-inset-bottom)"));
+});
+
+test("standalone and workspace not-found views preserve scoped framing and recovery destinations", () => {
+  for (const [view, href] of [
+    [<NotFound />, "/dashboard"],
+    [<WorkspaceNotFound />, "/projects"],
+  ] as const) {
+    const html = renderToStaticMarkup(view).replaceAll("&amp;", "&");
+    assert.match(html, /Nothing here/);
+    assert.ok(html.includes(`href="${href}"`));
+    for (const expected of [
+      "bg-canvas",
+      "rounded-[12px]",
+      "[.workspace-main_&]:border-0",
+      "[.workspace-main_&]:rounded-none",
+      "[.workspace-main_&]:bg-transparent",
+      "select-auto",
+      "border-button-border",
+    ])
+      assert.ok(html.includes(expected), expected);
+    assert.ok(!html.includes('class="primary-link"'));
+  }
+});
+
+// Exercise actual owner literals through the primitives' cn merger, without mounting
+// form/router effects. These contracts do not substitute for PM computed-style review.
+function ownerClasses(file: string, marker: string) {
+  const source = readFileSync(new URL(file, import.meta.url), "utf8");
+  const matches = [...source.matchAll(/className="([^"]*)"/g)].map((match) => match[1]);
+  const result = matches.find((value) => value.split(/\s+/).includes(marker));
+  assert.ok(result, `${file}: ${marker}`);
+  return result;
+}
+
+test("editor and project textarea owner utilities survive shared control merging at exact breakpoints", () => {
+  const title = controlClasses(
+    renderToStaticMarkup(
+      <Input className={ownerClasses("./note-editor.tsx", "title-input")} aria-invalid="true" />,
+    ),
+  );
+  for (const expected of [
+    "text-[23px]",
+    "[@media(max-width:760px)]:text-[21px]",
+    "border-transparent",
+    "aria-invalid:border-destructive",
+    "rounded-none",
+    "px-0",
+    "py-[8px]",
+  ])
+    assert.ok(title.has(expected), expected);
+  const writing = controlClasses(
+    renderToStaticMarkup(
+      <Textarea className={ownerClasses("./note-editor.tsx", "writing-area")} />,
+    ),
+  );
+  for (const expected of [
+    "min-h-[420px]",
+    "[@media(max-width:760px)]:min-h-[420px]",
+    "[@media(pointer:coarse)]:min-h-[44px]",
+    "text-[17px]",
+    "[@media(max-width:760px)]:text-[16px]",
+    "field-sizing-fixed",
+    "resize-y",
+    "leading-[1.65]",
+  ])
+    assert.ok(writing.has(expected), expected);
+  assert.ok(!writing.has("[@media(max-width:760px)]:min-h-[44px]"));
+  assert.ok(!writing.has("field-sizing-content"));
+  for (const [file, marker, min] of [
+    ["./project-form.tsx", "description-input", "160"],
+    ["./note-editor.tsx", "saved-comparison", "200"],
+  ]) {
+    const classes = controlClasses(
+      renderToStaticMarkup(<Textarea className={ownerClasses(file, marker)} />),
+    );
+    for (const expected of [
+      `min-h-[${min}px]`,
+      "[@media(max-width:760px)]:min-h-[44px]",
+      "[@media(pointer:coarse)]:min-h-[44px]",
+      "resize-y",
+    ])
+      assert.ok(classes.has(expected), `${marker}: ${expected}`);
+  }
+});
+
+test("shell keeps runtime drawer hooks and separates literal utilities from template interpolations", () => {
+  const source = readFileSync(
+    new URL("../../components/workspace-shell.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /id="workspace-sidebar"/);
+  assert.match(source, /id="workspace-main"/);
+  assert.ok(source.includes('open ? "is-open" : ""'));
+  for (const marker of ["workspace-main", "sidebar glass"]) {
+    const template = [...source.matchAll(/className=\{`([^`]+)`\}/g)]
+      .map((match) => match[1])
+      .find((value) => value.startsWith(marker));
+    assert.ok(template, marker);
+    const literal = template.split("${")[0];
+    // Tailwind must see a delimiter before interpolation, including for the last utility.
+    assert.match(literal, /\s$/);
+    assert.ok(literal.includes("[@media(max-width:760px)]"));
+    assert.ok(!literal.includes("md:"));
+  }
+});
+
+test("project forms remain full-width while notes keep their left-aligned reading-width cap", () => {
+  const project = new Set(ownerClasses("./project-form.tsx", "project-form").split(/\s+/));
+  assert.ok(project.has("w-full"));
+  assert.ok(![...project].some((value) => value.startsWith("max-w-") || value === "mx-auto"));
+  const note = new Set(ownerClasses("./note-editor.tsx", "note-editor").split(/\s+/));
+  for (const expected of ["m-0", "w-full", "max-w-[760px]"]) assert.ok(note.has(expected));
 });
 
 test("new and existing editors begin clean without inventing event dates", () => {
