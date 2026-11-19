@@ -55,5 +55,5 @@ export const MessageContent = memo(function MessageContent({ content }: { conten
       blocks.push(<p key={blocks.length}>{inline(paragraph.join("\n"))}</p>);
     }
   }
-  return <div className="chat-prose">{blocks}</div>;
+  return <div className="chat-prose text-[15px] leading-[1.7]">{blocks}</div>;
 });

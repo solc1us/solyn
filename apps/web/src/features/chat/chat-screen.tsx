@@ -1,7 +1,8 @@
 "use client";
 
-import { Button } from "@solyn/ui/components/button";
+import { Button, buttonVariants } from "@solyn/ui/components/button";
 import { Textarea } from "@solyn/ui/components/textarea";
+import { cn } from "@solyn/ui/lib/utils";
 import { ArrowLeft, Plus } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -56,7 +57,11 @@ function ChatHistory({ close }: { close: () => void }) {
     };
   }, [offset]);
   return (
-    <nav className="chat-history" aria-label="Conversation history" aria-busy={busy}>
+    <nav
+      className="chat-history absolute inset-[100%_16px_auto] rounded-[8px] border border-border bg-popover p-[12px]"
+      aria-label="Conversation history"
+      aria-busy={busy}
+    >
       {busy ? (
         <p role="status">Loading conversations…</p>
       ) : error ? (
@@ -64,12 +69,18 @@ function ChatHistory({ close }: { close: () => void }) {
       ) : (
         <>
           {rows.length ? (
-            <ul>
+            <ul className="m-0 mb-[8px] max-h-[min(40dvh,320px)] list-none overflow-auto p-0">
               {rows.map((row) => (
                 <li key={row.id}>
-                  <Link href={`/chat?conversationId=${row.id}`} onClick={close}>
+                  <Link
+                    href={`/chat?conversationId=${row.id}`}
+                    onClick={close}
+                    className="grid gap-[2px] rounded-[6px] px-[10px] py-[8px] [overflow-wrap:anywhere] [&:hover]:bg-(--hover)"
+                  >
                     <span>{row.title}</span>
-                    <small>{row.projectId ? "Project chat" : "General chat"}</small>
+                    <small className="text-[12px] text-muted-foreground">
+                      {row.projectId ? "Project chat" : "General chat"}
+                    </small>
                   </Link>
                 </li>
               ))}
@@ -79,7 +90,7 @@ function ChatHistory({ close }: { close: () => void }) {
           )}
         </>
       )}
-      <div className="inline-actions">
+      <div className="flex flex-wrap items-center gap-[8px]">
         <Button
           className="control"
           variant="secondary"
@@ -266,11 +277,16 @@ export default function ChatScreen({
     });
   }
   return (
-    <section className="chat-screen" aria-label="Ask Solyn">
-      <header className="chat-header">
-        <div className="chat-header-row">
-          <h1>{state.conversation?.title ?? "Ask Solyn"}</h1>
-          <div className="inline-actions">
+    <section
+      className="chat-screen flex h-full min-h-0 flex-col [@media(max-width:760px)]:h-auto [@media(max-width:760px)]:min-h-[calc(100dvh-88px)]"
+      aria-label="Ask Solyn"
+    >
+      <header className="chat-header relative z-10 shrink-0 border-b border-border bg-canvas px-[24px] pt-[14px] pb-[12px] [@media(max-width:760px)]:px-[16px] [@media(max-width:760px)]:py-[14px]">
+        <div className="chat-header-row flex items-center justify-between gap-[12px] [@media(max-width:760px)]:flex-wrap">
+          <h1 className="min-w-0 truncate text-[16px] tracking-[-0.015em] [@media(max-width:760px)]:whitespace-normal">
+            {state.conversation?.title ?? "Ask Solyn"}
+          </h1>
+          <div className="flex flex-wrap items-center gap-[8px]">
             <Button
               ref={historyToggle}
               type="button"
@@ -282,16 +298,17 @@ export default function ChatScreen({
             >
               History
             </Button>
-            <Link href={newHref} className="secondary-link">
-              <Plus size={15} aria-hidden="true" />
+            <Link href={newHref} className={cn(buttonVariants(), "bg-clip-border select-auto")}>
+              <Plus size={15} className="size-[15px]" aria-hidden="true" />
               New chat
             </Link>
           </div>
         </div>
-        <div className="chat-scope">
+        <div className="chat-scope mt-[4px] text-[12px] text-muted-foreground [overflow-wrap:anywhere]">
           {state.project ? (
             <Link
               href={`/projects/${state.project.id}`}
+              className="inline-flex items-center gap-[6px] text-[#b2c7ff]"
               aria-label={`Project: ${state.project.name}. Back to project`}
             >
               <ArrowLeft size={14} aria-hidden="true" />
@@ -308,7 +325,7 @@ export default function ChatScreen({
         </div>
       </header>
       <div
-        className="chat-messages"
+        className="chat-messages min-h-0 flex-1 overflow-auto p-[24px] [scrollbar-gutter:stable] [scroll-padding-block:20px] [@media(max-width:760px)]:overflow-visible [@media(max-width:760px)]:px-[16px] [@media(max-width:760px)]:py-[20px]"
         ref={messages}
         tabIndex={0}
         role="region"
@@ -320,7 +337,7 @@ export default function ChatScreen({
           }
         }}
       >
-        <div className="chat-thread">
+        <div className="chat-thread min-w-0 w-full">
           {state.hasOlder ? (
             <Button
               type="button"
@@ -333,19 +350,31 @@ export default function ChatScreen({
             </Button>
           ) : null}
           {!state.messages.length && !state.needsReconcile ? (
-            <p className="chat-empty">
+            <p className="chat-empty py-[24px] text-muted-foreground">
               {state.conversation ? "No messages yet." : "Start a conversation."}
             </p>
           ) : null}
           {state.messages.map((message) => (
             <article
-              className={`chat-message chat-message-${message.role}`}
+              className={cn(
+                `chat-message chat-message-${message.role}`,
+                "mb-[28px] min-w-0 max-w-[760px] [overflow-wrap:anywhere]",
+                message.role === "user" &&
+                  "ml-auto w-fit max-w-[min(75%,760px)] [@media(max-width:760px)]:max-w-[92%] [&_.chat-prose]:rounded-[7px] [&_.chat-prose]:bg-(--hover) [&_.chat-prose]:px-[14px] [&_.chat-prose]:py-[10px]",
+              )}
               key={`${message.turnId}:${message.role}`}
               aria-label={message.role === "user" ? "Your message" : "Solyn response"}
             >
-              <header>
+              <header
+                className={cn(
+                  "mb-[8px] flex flex-wrap items-baseline gap-[12px] text-[13px] font-[550]",
+                  message.role === "user" && "justify-end",
+                )}
+              >
                 <span>{message.role === "user" ? "You" : "Solyn"}</span>
-                <small>{messageStatus(message, generating)}</small>
+                <small className="text-[12px] font-normal text-muted-foreground">
+                  {messageStatus(message, generating)}
+                </small>
               </header>
               {message.content ? (
                 <MessageContent content={message.content} />
@@ -364,38 +393,46 @@ export default function ChatScreen({
           ))}
         </div>
       </div>
-      <div className="chat-composer-area">
-        <div className="chat-composer-inner">
+      <div className="chat-composer-area shrink-0 bg-canvas px-[24px] pt-[8px] pb-[16px] [@media(max-width:760px)]:sticky [@media(max-width:760px)]:bottom-0 [@media(max-width:760px)]:px-[16px] [@media(max-width:760px)]:pb-[max(16px,env(safe-area-inset-bottom))]">
+        <div className="chat-composer-inner min-w-0 w-full">
           {state.issue ? (
-            <div className="feedback feedback-error" role="alert">
+            <div
+              className="mt-[22px] rounded-[7px] border border-[#71404c] bg-[#342333] px-[16px] py-[14px] text-[14px] text-[#ffd2d7]"
+              role="alert"
+            >
               <p>{issueMessages[state.issue]}</p>
               {state.issue === "UNAUTHENTICATED" ? (
-                <Link href="/login" target="_blank" rel="noopener noreferrer">
+                <Link
+                  href="/login"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-[8px] inline-block underline"
+                >
                   Sign in in a new tab
                 </Link>
               ) : null}
             </div>
           ) : null}
           {state.viewingOlder ? (
-            <p className="chat-notice">
+            <p className="chat-notice mb-[8px] text-[13px] text-muted-foreground">
               Viewing older messages. Reload saved history to return to the latest messages and
               continue.
             </p>
           ) : null}
           {state.pendingTurn ? (
-            <p className="chat-notice" role="status">
+            <p className="chat-notice mb-[8px] text-[13px] text-muted-foreground" role="status">
               {state.pendingTurn.abandoned
                 ? "The previous response was interrupted. Sending a new message will mark it failed."
                 : "A response is still pending. Reload saved history to check its status."}
             </p>
           ) : null}
           {state.attempt && !busy && !state.pendingTurn ? (
-            <p className="chat-notice">
+            <p className="chat-notice mb-[8px] text-[13px] text-muted-foreground">
               This send is not confirmed. Reload history or retry the same message with its original
               turn ID.
             </p>
           ) : null}
-          <div className="chat-recovery inline-actions">
+          <div className="chat-recovery mb-[8px] flex flex-wrap items-center gap-[8px] empty:hidden">
             {conversationId || state.conversation ? (
               <Button
                 type="button"
@@ -423,7 +460,7 @@ export default function ChatScreen({
           </div>
           <form
             ref={form}
-            className="chat-composer"
+            className="chat-composer rounded-[8px] border border-input bg-canvas p-[10px] focus-within:border-ring"
             onSubmit={(event) => {
               event.preventDefault();
               startTransition(async () => session.submit());
@@ -434,7 +471,7 @@ export default function ChatScreen({
             </label>
             <Textarea
               id="chat-input"
-              className="chat-input"
+              className="chat-input min-h-[72px] max-h-[min(24dvh,180px)] resize-y rounded-[4px] border-0 bg-transparent px-[4px] py-[2px] text-[15px] leading-[1.6] [@media(max-width:760px)]:min-h-[72px] [@media(max-width:760px)]:text-[16px] [@media(pointer:coarse)]:min-h-[72px]"
               rows={3}
               maxLength={CHAT_INPUT_LIMIT}
               value={state.draft}
@@ -448,8 +485,12 @@ export default function ChatScreen({
                 }
               }}
             />
-            <div className="chat-composer-toolbar">
-              <span role="status" aria-live="polite">
+            <div className="chat-composer-toolbar mt-[6px] flex items-center gap-[10px]">
+              <span
+                role="status"
+                aria-live="polite"
+                className="flex-1 text-[12px] text-muted-foreground"
+              >
                 {activeStatus}
               </span>
               <span
@@ -475,7 +516,7 @@ export default function ChatScreen({
               )}
             </div>
           </form>
-          <p className="chat-help" id="chat-input-help">
+          <p className="chat-help mt-[8px] text-[12px] text-muted-foreground" id="chat-input-help">
             Enter to send · Shift+Enter for a new line. Project notes aren’t available in chat yet.
           </p>
         </div>

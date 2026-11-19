@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
+import { Textarea } from "@solyn/ui/components/textarea";
+import { cn } from "@solyn/ui/lib/utils";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import {
@@ -792,6 +795,103 @@ test("Enter submits, Shift+Enter inserts newline, and IME composition cannot sub
   assert.equal(shouldSend({ ...enter, key: "a" }), false);
 });
 
+// Test the real owner literals through cn without mounting router/session effects.
+// Computed CSS, scrolling and mobile keyboard behavior remain PM acceptance checks.
+function chatClasses(marker: string) {
+  const source = readFileSync(new URL("./chat-screen.tsx", import.meta.url), "utf8");
+  const classes = [...source.matchAll(/className="([^"]*)"/g)].map((match) => match[1]);
+  const value = classes.find((entry) => entry.split(/\s+/).includes(marker));
+  assert.ok(value, marker);
+  return new Set(value.split(/\s+/));
+}
+
+test("chat textarea merging keeps the outer-border focus policy and 72px minimum at every input breakpoint", () => {
+  const html = renderToStaticMarkup(
+    <Textarea className={[...chatClasses("chat-input")].join(" ")} />,
+  );
+  const classes = new Set((html.match(/class="([^"]*)"/)?.[1] ?? "").split(/\s+/));
+  for (const expected of [
+    "border-0",
+    "bg-transparent",
+    "shadow-none",
+    "outline-none",
+    "resize-y",
+    "field-sizing-content",
+    "rounded-[4px]",
+    "px-[4px]",
+    "py-[2px]",
+    "min-h-[72px]",
+    "max-h-[min(24dvh,180px)]",
+    "text-[15px]",
+    "leading-[1.6]",
+    "[@media(max-width:760px)]:text-[16px]",
+    "[@media(max-width:760px)]:min-h-[72px]",
+    "[@media(pointer:coarse)]:min-h-[72px]",
+  ])
+    assert.ok(classes.has(expected), expected);
+  assert.ok(
+    ![...classes].some((value) => value.includes("ring-1") || value.includes("min-h-[44px]")),
+  );
+  assert.ok(chatClasses("chat-composer").has("focus-within:border-ring"));
+});
+
+test("literal role utilities preserve assistant reading width and user alignment, bubble and responsive caps", () => {
+  const source = readFileSync(new URL("./chat-screen.tsx", import.meta.url), "utf8");
+  const base = source.match(/"(mb-\[28px\] min-w-0 max-w-\[760px\][^"]*)"/)?.[1];
+  const user = source.match(/"(ml-auto w-fit [^"]*)"/)?.[1];
+  assert.ok(base && user);
+  const assistantClasses = new Set(cn(base).split(/\s+/));
+  assert.ok(assistantClasses.has("max-w-[760px]"));
+  assert.ok(!assistantClasses.has("ml-auto"));
+  const userClasses = new Set(cn(base, user).split(/\s+/));
+  for (const expected of [
+    "ml-auto",
+    "w-fit",
+    "max-w-[min(75%,760px)]",
+    "[@media(max-width:760px)]:max-w-[92%]",
+    "[&_.chat-prose]:rounded-[7px]",
+    "[&_.chat-prose]:bg-(--hover)",
+    "[&_.chat-prose]:px-[14px]",
+    "[&_.chat-prose]:py-[10px]",
+  ])
+    assert.ok(userClasses.has(expected), expected);
+  assert.ok(!userClasses.has("max-w-[760px]"));
+  assert.ok(source.includes("chat-message-${message.role}"));
+  assert.match(source, /message\.role === "user"\s*&&\s*"justify-end"/);
+});
+
+test("chat owner classes keep desktop message scrolling, mobile document flow, bounded history and empty recovery collapse", () => {
+  for (const [marker, expected] of [
+    ["chat-screen", ["h-full", "min-h-0", "[@media(max-width:760px)]:h-auto"]],
+    [
+      "chat-messages",
+      [
+        "flex-1",
+        "min-h-0",
+        "overflow-auto",
+        "[scrollbar-gutter:stable]",
+        "[@media(max-width:760px)]:overflow-visible",
+      ],
+    ],
+    [
+      "chat-composer-area",
+      [
+        "shrink-0",
+        "[@media(max-width:760px)]:sticky",
+        "[@media(max-width:760px)]:bottom-0",
+        "[@media(max-width:760px)]:pb-[max(16px,env(safe-area-inset-bottom))]",
+      ],
+    ],
+    ["chat-recovery", ["flex", "flex-wrap", "empty:hidden"]],
+    ["chat-history", ["absolute", "inset-[100%_16px_auto]"]],
+    ["max-h-[min(40dvh,320px)]", ["overflow-auto", "list-none"]],
+  ] as const) {
+    const classes = chatClasses(marker);
+    for (const value of expected) assert.ok(classes.has(value), `${marker}: ${value}`);
+    assert.ok(![...classes].some((value) => value.startsWith("md:")));
+  }
+});
+
 test("answer formatting escapes raw HTML/URLs and renders text, code, headings and lists without scripts", () => {
   const markup = renderToStaticMarkup(
     <MessageContent
@@ -800,6 +900,7 @@ test("answer formatting escapes raw HTML/URLs and renders text, code, headings a
       }
     />,
   );
+  assert.match(markup, /class="chat-prose text-\[15px\] leading-\[1\.7\]"/);
   assert.match(markup, /<h3>Heading<\/h3>/);
   assert.match(markup, /<ul><li>One<\/li><li>Two<\/li><\/ul>/);
   assert.match(markup, /&lt;script&gt;/);
