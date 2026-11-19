@@ -1,12 +1,14 @@
-# Frontend styling refactor — R0 audit and proposed plan
+# Frontend styling refactor — audit, plan and closure
 
-**Status:** R0 complete; R1–R4 NOT started; PM review required.
+**Status:** R1–R3 implemented and reviewed; R4 audit complete with no further runtime cleanup warranted. Final PM browser acceptance and merge authorization remain pending.
 
 **Branch:** `refactor/web-tailwind-styling`
 
 **Audited/base commit:** `e5393e5a408b372a5845beecd632164691e77403`
 
 **Design authority:** `docs/DESIGN.md` **2.0**, unchanged. Preserve the approved appearance and behavior, not just its general direction.
+
+> Sections 1–6 retain the historical R0 baseline and approved stage plan; present-tense findings there describe the pre-refactor implementation. Section 7 records current completion, ownership and acceptance gates.
 
 ## 1. Phase 2 integration record
 
@@ -193,4 +195,71 @@ No new hook, state layer, observer, third-party scroller, component split or DOM
 
 **Evidence limitations:** existing frontend tests cover reducers, safe static markup and chat lifecycle/parser contracts, not computed CSS, mounted focus, mobile keyboard or actual browser scrolling. The current build establishes compilation, not visual parity. No performance bottleneck or need for functional JS refactoring was demonstrated. The explicit source-path issue needs installed Tailwind confirmation during R1. Data API disablement/deployment absence and prior visual/live-chat acceptance are PM confirmations, not fresh remote/browser probes.
 
-**R0 change boundary:** only this audit/plan document is added. No CSS, component, JS/TS, configuration or DESIGN.md changes are implemented. Await PM approval before R1.
+**Historical R0 change boundary:** only this audit/plan document was added at R0. Implementation awaited PM approval; the current outcome is recorded below.
+
+## 7. R4 closure record
+
+### Implementation status and final scope
+
+| Stage | Outcome                                                                                                          | Reviewed commit(s)                                    |
+| ----- | ---------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| R1    | Token aliases/source scanning and shared Button/Input/Textarea/Label styling implemented and reviewed.           | `76fd399`, `f947b9c`                                  |
+| R2    | Shell, workspace, collections, forms/editor, login and status presentation implemented and reviewed.             | `07ba2e2`                                             |
+| R3    | Chat presentation, composer/recovery and remaining legacy shared selectors migrated and reviewed.                | `1628ea0`                                             |
+| R4    | Final selector/consumer, cascade, compiler and complete branch-diff audits complete; documentation-only closure. | This uncommitted update; final PM acceptance pending. |
+
+Preflight found a clean tree on `refactor/web-tailwind-styling` at `1628ea05b101929c76791a146db971b63ce52b1a`. R1–R3 commits and local `main` (`e5393e5a408b372a5845beecd632164691e77403`) are ancestors. The complete `main...HEAD` diff contains **30 files**: 25 production TSX files, two existing test files, two stylesheets and this plan. AST comparison of all 25 production files permits only class ownership/CVA styling literals and the existing `cn`/`buttonVariants` styling imports, normalizing formatter whitespace/parentheses. Element hierarchy, non-class props, text, IDs, refs, handlers, state/effects, variant/size keys and defaults are unchanged. Both test diffs are additions only. No unexpected functional changes were found; no auth/authorization, API/action/service, schema/migration, transport/state/provider, dependency/lockfile or infrastructure paths changed.
+
+**Cleanup decision:** no additional CSS selectors or declarations are removed in R4. R1–R3 already retired their old owners atomically, including the historical page-heading paragraph/metadata arms and legacy control/link/feedback families. Current `apps/web/src/index.css` is **214 lines / 31 rule blocks**. All remaining rules have a global, structural, contextual or compatibility purpose; shortening the file is not a goal.
+
+### Retained CSS: complete selector ownership
+
+| Selectors/directives                                                                                          | Actual owner or policy; why retained                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Web `@import`, `@theme inline`, `:root`, `.dark`                                                              | Root layout imports the shared stylesheet and supplies Geist variables/dark class. Solyn token values remain unchanged; four aliases expose existing canvas/button values. Shared fallback tokens versus web overrides are intentional, not obsolete duplicates.                                                         |
+| `html`, `body`, `body::before`                                                                                | Every route: document sizing/scroll clearance, typography, isolation and fixed night-sky/star background. Pseudo-element stacking depends on body isolation.                                                                                                                                                             |
+| `::selection`                                                                                                 | Global selected-text contrast.                                                                                                                                                                                                                                                                                           |
+| `:focus-visible`, `.collection-row:focus-visible`                                                             | Global keyboard outline; Collection's anchor needs an inward offset because its parent uses `overflow: clip`. Normal owner utilities must not suppress keyboard focus.                                                                                                                                                   |
+| `button, a, input, textarea`; `button:not(:disabled), summary`; `a`; `fieldset`                               | Native interaction defaults, underline clearance and fieldset reset. Buttons/links/fields are live across routes; fieldsets wrap login/project/note controls. The native-summary cursor arm is retained as global compatibility policy, not claimed as currently rendered markup.                                        |
+| Base-layer `h1, h2, h3, p`, individual `h1/h2/h3`, mobile `h1`                                                | Route/status headings, note comparison and Chat renderer paragraphs/headings. Base placement lets component utilities own local type while preserving unchanged defaults and the exact 760px query.                                                                                                                      |
+| `.glass`, including its `@supports` block                                                                     | Workspace sidebar and mobile header. Owners supply borders/geometry; CSS retains the shared surface/shadow fallback and supported blur treatment.                                                                                                                                                                        |
+| `[data-slot="input"], [data-slot="textarea"]`                                                                 | Existing Input/Textarea primitives used by login, forms, editor and composer. Important outline suppression is necessary against the global important focus policy; primitives/owners provide the approved border focus instead.                                                                                         |
+| `.form-control[data-slot]:is(.title-input, .writing-area):focus:not([aria-invalid="true"])`                   | Note Editor title/content. Keeps valid focus underline-only; excludes invalid fields so the primitive error border remains authoritative. A normal utility would lose to this intentional unlayered state policy.                                                                                                        |
+| `.chat-prose p`, `.chat-prose > * + *`, `.chat-prose h3`                                                      | `MessageContent` emits paragraphs, sibling blocks and headings. Preserves whitespace, block spacing and heading type without a typography package or extensive descendant utility strings.                                                                                                                               |
+| `.chat-prose ul, .chat-prose ol`, individual `.chat-prose ul/ol`                                              | Renderer emits ordered/unordered lists. Restores the intended indentation and markers after preflight resets.                                                                                                                                                                                                            |
+| `.chat-prose code`, `.chat-prose pre`, `.chat-prose pre code`                                                 | Renderer emits inline/fenced code. Inline styling and the higher-specificity block-code padding/whitespace override are independently necessary; `pre` keeps long code locally horizontally scrollable. All nine structural prose rule blocks are unchanged.                                                             |
+| Desktop `.workspace-main.is-chat`                                                                             | Shell conditionally emits `is-chat` for `/chat`. At min-width 761px the unlayered exception overrides the normal canvas overflow/gutter utilities; Chat's message region, not the canvas, scrolls. Mobile remains document flow.                                                                                         |
+| Reduced-motion `*, *::before, *::after`                                                                       | Global accessibility policy covering owner and third-party animations/transitions/scrolling. Important overrides are intentional.                                                                                                                                                                                        |
+| Shared stylesheet imports, sources, dark variant, `:root`, `.dark`, `@theme inline`, base `*`, `body`, `html` | Existing UI package/scaffold contract for all 17 modules, including the 12 not directly imported by the app. Shared globals differ from main only by the approved stylesheet-relative app source correction to `../../../../apps/**/*.{ts,tsx}`. Keep unused primitive APIs/tokens and mounted Sonner's variable bridge. |
+
+Remaining overlap is intentional default/state/support layering, not competing legacy component ownership. In particular, repeated mobile field minimums cannot be removed just because their numeric values resemble a base rule: they can override shared control media defaults. Fine/coarse-pointer quirks from the approved baseline remain unchanged.
+
+### Final styling conventions
+
+- Literal Tailwind utilities on existing owners control normal application layout, presentation and responsive/interactive states. Keep exact max-width 760px, min-width 761px and 1100px adjustments; coarse pointer remains independent. Use existing `cn` for caller overrides and account for its font-size/line-height merging.
+- Existing CVA primitives own reusable controls; action links reuse `buttonVariants` with their established link-specific overrides. Button's six variants/eight sizes and shared field/label APIs remain intact. No utility wrapper, replacement chat widget, package or new layer is needed.
+- CSS owns true globals, feature-query fallback and the narrow structural/focus/scroll relationships above. Retire an old declaration atomically when ownership moves; do not depend on generated utility names from global selectors.
+- Preserve runtime/context hooks. `is-open` is both a drawer utility state and a Chat JS lookup; `is-chat` controls the desktop canvas exception. `.workspace-main` and `.mobile-header` also anchor literal arbitrary context variants. Chat role interpolation is now a nonvisual hook; role styling uses literal conditional utilities. Other nonvisual markers are left unchanged rather than creating cosmetic churn; absence from global CSS alone does not prove a class is unused.
+
+### Final regression evidence and limitations
+
+- `bun test`: **178 passed, 0 failed**, 10 files.
+- `bun run check-types`: all four workspaces exited 0.
+- `bunx oxlint`: exit 0.
+- `bun run --filter web build`: exit 0.
+- `git diff --name-only -z main...HEAD | xargs -0 bunx oxfmt --check`: all **30** branch-changed files pass; the R4 document is also checked after its update.
+- `git diff --check main...HEAD` and `git diff --check`: pass; LF/CRLF notices are Git configuration warnings, not whitespace failures.
+- Installed compiler/Oxide scanner and final production CSS confirm **804 added per-file unique class/CVA literals** across the 25 production files are independently discoverable in their owners and emitted. Representative checks cover canvas/drawer, sticky headers, 1100px login/header variants, scoped status views, content visibility, shared focus/invalid/disabled/hover/pressed states and Chat bubbles/composer/recovery. The three interpolated class templates in changed owners contain only shell state markers or the nonvisual role hook, not dynamic utility fragments.
+- All **31 retained application rule blocks** are value-accounted against main; intentional ownership/layer changes are the R1 shared-field outline exception and R2 glass-border/base-typography migration. Shared globals have only the approved source-path change. No further R4 runtime/style changes were made.
+- Fresh offline source-cascade audits pass **80 shared/control-context font/min-height cases against main** at 760/761/768/1100px, fine/coarse, plus **120 Chat cases against post-R2** at 759/760/761/768/1100px, including outer focus and empty/nonempty recovery. No previously emitted still-discoverable utilities were lost. Audit scripts/logs remain outside the repository.
+
+These are source/compiler/static-markup checks, **not browser computed-style or end-to-end proof**. No automated browser/screenshots, live Groq calls, database writes/migrations, commits, pushes, merges or deployments were performed. Earlier product/integration acceptance records are not revalidated by this styling audit.
+
+### Final PM acceptance and freeze criteria
+
+1. PM checks Workspace fixed desktop canvas/internal scroll, mobile natural flow/drawer, Escape/focus restoration/skip link, sticky headings, long/empty/paginated collections, full-width Project Form, left-aligned Note Editor and invalid/conflict/comparison presentation. Include login/loading/error/not-found framing.
+2. PM checks Chat's stationary desktop header/composer and independent message scroller; mobile sticky composer, keyboard and safe areas; both roles' alignment/widths; wrapping/local code scroll; history, statuses, recovery, Stop and existing navigation/scroll behavior. Verify the single composer focus border and visible button/link focus.
+3. Cover **760/761/768/1100px**, fine/coarse pointers, keyboard and reduced motion. PM review of R1–R3 is recorded separately from this still-pending final cross-screen browser acceptance.
+4. After PM acceptance and explicit commit/merge authorization, freeze this styling refactor. Reopen only for a specific future requirement or demonstrated defect, with a narrowly scoped fix and relevant checks—not another broad cleanup, abstraction pass or CSS line-count target.
+
+**Recommendation:** ready for final PM acceptance; merge remains gated on that acceptance and explicit authorization. No further styling refactor is recommended. `docs/DESIGN.md` remains version 2.0 and unchanged.
