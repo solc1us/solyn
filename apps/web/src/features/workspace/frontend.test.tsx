@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { Button, buttonVariants } from "@solyn/ui/components/button";
+import { Input } from "@solyn/ui/components/input";
+import { Label } from "@solyn/ui/components/label";
+import { Textarea } from "@solyn/ui/components/textarea";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { createNoteInput } from "./contracts";
@@ -25,6 +29,158 @@ const note: Note = {
   updatedAt: new Date("2026-01-01T00:00:00Z"),
   version: 1,
 };
+
+function controlClasses(html: string) {
+  return new Set(
+    (html.match(/\bclass="([^"]*)"/)?.[1] ?? "").replaceAll("&amp;", "&").split(/\s+/),
+  );
+}
+
+test("neutral buttons own their compact surface without a second focus ring or pressed movement", () => {
+  for (const variant of ["default", "secondary"] as const) {
+    const classes = controlClasses(renderToStaticMarkup(<Button variant={variant}>Save</Button>));
+    for (const expected of [
+      "bg-button",
+      "border-button-border",
+      "shadow-[inset_0_1px_rgba(255,255,255,0.045)]",
+      "rounded-[7px]",
+      "text-[13px]",
+      "leading-[1.35]",
+      "font-[550]",
+      "h-auto",
+      "min-h-[32px]",
+      "px-[11px]",
+      "py-[6px]",
+      "[@media(max-width:760px)]:min-h-[44px]",
+      "[@media(pointer:coarse)]:min-h-[44px]",
+      "[&:hover:not(:active)]:bg-button-hover",
+      "active:bg-secondary",
+      "active:translate-none",
+    ])
+      assert.ok(classes.has(expected), `${variant}: ${expected}`);
+    assert.ok(!classes.has("focus-visible:ring-1"));
+    assert.ok(!classes.has("active:not-aria-[haspopup]:translate-y-px"));
+  }
+});
+
+test("ghost buttons retain their distinct hover, keyboard focus and popup-aware pressed behavior", () => {
+  const classes = controlClasses(
+    renderToStaticMarkup(
+      <Button variant="ghost" aria-haspopup="menu">
+        History
+      </Button>,
+    ),
+  );
+  for (const expected of [
+    "hover:bg-muted",
+    "dark:hover:bg-muted/50",
+    "focus-visible:border-ring",
+    "focus-visible:ring-1",
+    "active:not-aria-[haspopup]:translate-y-px",
+  ])
+    assert.ok(classes.has(expected), expected);
+  assert.ok(!classes.has("bg-button"));
+});
+
+test("Button keeps variant/size APIs, disabled semantics and caller utility overrides", () => {
+  for (const variant of [
+    "default",
+    "outline",
+    "secondary",
+    "ghost",
+    "destructive",
+    "link",
+  ] as const)
+    for (const size of [
+      "default",
+      "xs",
+      "sm",
+      "lg",
+      "icon",
+      "icon-xs",
+      "icon-sm",
+      "icon-lg",
+    ] as const)
+      assert.ok(buttonVariants({ variant, size }).length > 0);
+  const html = renderToStaticMarkup(
+    <Button
+      disabled
+      type="submit"
+      aria-label="Save note"
+      className="control rounded-[9px] px-4 bg-red-500"
+    >
+      Save
+    </Button>,
+  );
+  const classes = controlClasses(html);
+  for (const expected of ["control", "rounded-[9px]", "px-4", "bg-red-500", "disabled:opacity-50"])
+    assert.ok(classes.has(expected), expected);
+  for (const replaced of ["rounded-[7px]", "px-[11px]", "bg-button"])
+    assert.ok(!classes.has(replaced), replaced);
+  assert.match(html, /disabled=""/);
+  assert.match(html, /type="submit"/);
+  assert.match(html, /aria-label="Save note"/);
+});
+
+test("shared fields preserve 16px type, error-first border focus and prop forwarding without rings", () => {
+  for (const field of [
+    <Input
+      id="field"
+      type="date"
+      disabled
+      aria-invalid="true"
+      aria-describedby="field-error"
+      className="form-control"
+    />,
+    <Textarea
+      id="field"
+      readOnly
+      aria-invalid="true"
+      aria-describedby="field-error"
+      className="form-control saved-comparison"
+    />,
+  ]) {
+    const html = renderToStaticMarkup(field);
+    const classes = controlClasses(html);
+    for (const expected of [
+      "form-control",
+      "text-[16px]",
+      "leading-[1.6]",
+      "bg-canvas",
+      "rounded-[7px]",
+      "shadow-none",
+      "focus:not-aria-[invalid=true]:border-ring",
+      "aria-invalid:border-destructive",
+      "disabled:opacity-70",
+      "placeholder:opacity-100",
+      "[@media(max-width:760px)]:min-h-[44px]",
+      "[@media(pointer:coarse)]:min-h-[44px]",
+    ])
+      assert.ok(classes.has(expected), expected);
+    assert.ok(
+      ![...classes].some((value) => value.includes("ring-1") || value.includes("ring-ring")),
+    );
+    assert.ok(![...classes].some((value) => value.startsWith("md:text-")));
+    assert.match(html, /aria-invalid="true"/);
+    assert.match(html, /aria-describedby="field-error"/);
+    assert.match(html, /id="field"/);
+  }
+});
+
+test("labels and editor/chat class hooks survive shared primitive class merging", () => {
+  const label = renderToStaticMarkup(<Label htmlFor="title">Title</Label>);
+  assert.match(label, /for="title"/);
+  const classes = controlClasses(label);
+  assert.ok(classes.has("text-[14px]"));
+  assert.ok(classes.has("leading-none"));
+  assert.ok(classes.has("text-foreground"));
+  for (const field of [
+    <Input className="form-control title-input" />,
+    <Textarea className="form-control writing-area" />,
+    <Textarea className="chat-input" />,
+  ])
+    assert.match(renderToStaticMarkup(field), /(?:title-input|writing-area|chat-input)/);
+});
 
 test("new and existing editors begin clean without inventing event dates", () => {
   assert.equal(isDirty(initialEditor()), false);
