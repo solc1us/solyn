@@ -15,8 +15,9 @@ import {
   type ChatView,
 } from "./client-state";
 import { MessageContent } from "./message-content";
+import { RetrievedNotes } from "./retrieved-notes";
 import { ProposalPreview } from "./proposal-preview";
-import { PROPOSAL_MESSAGE, type ProposalView } from "./contracts";
+import { PROPOSAL_MESSAGE, type ProposalView, type SourceView } from "./contracts";
 import {
   consumeChatResponse,
   parseSSE,
@@ -113,6 +114,7 @@ function fixture(
       messages: database.map((m) => ({
         ...m,
         proposal: m.proposal ?? null,
+        sources: m.sources ?? [],
         modelId: m.role === "assistant" ? "test-model" : null,
         createdAt: now,
         updatedAt: now,
@@ -193,6 +195,343 @@ async function until(check: () => boolean) {
   }
   assert.fail("Expected asynchronous state transition");
 }
+
+const sourceNoteId = "88888888-8888-4888-8888-888888888888";
+const source: SourceView = {
+  ordinal: 1,
+  state: "available",
+  noteId: sourceNoteId,
+  projectId,
+  title: "Current <script>alert('title')</script>",
+  href: `/projects/${projectId}/notes/${sourceNoteId}`,
+  retrievedUpdatedAt: now.toISOString(),
+  updatedAt: now.toISOString(),
+};
+function sourceHistory(sources: SourceView[] = [source]): ChatView {
+  const base = fixture({ existing: true, project: true }).view();
+  return {
+    ...base,
+    messages: pair().map((message) => ({
+      ...message,
+      sources: message.role === "assistant" ? sources : [],
+      proposal: null,
+      modelId: message.role === "assistant" ? "test-model" : null,
+      createdAt: now,
+      updatedAt: now,
+    })),
+  };
+}
+const sourceFinish = (sources: unknown = [source], messageId = assistantId) =>
+  frame("finish", {
+    turnId,
+    messageId,
+    status: "completed",
+    persisted: true,
+    sources,
+  });
+
+test("sources finish and JSON replay validate message identity while legacy omitted fields default empty", async () => {
+  const outcome = await consumeChatResponse(
+    sse(start() + delta() + sourceFinish()),
+    attempt,
+    () => {},
+    new AbortController().signal,
+  );
+  assert.equal(outcome.kind, "finish");
+  if (outcome.kind === "finish") assert.deepEqual(outcome.sources, [source]);
+  const view = sourceHistory();
+  const replay = await consumeChatResponse(
+    Response.json({
+      ok: true,
+      replayed: true,
+      abandoned: false,
+      user: view.messages[0],
+      assistant: view.messages[1],
+    }),
+    attempt,
+    () => {},
+    new AbortController().signal,
+  );
+  assert.equal(replay.kind, "replay");
+  if (replay.kind === "replay") assert.deepEqual(replay.assistant.sources, [source]);
+  const legacy = await consumeChatResponse(
+    sse(start() + delta() + finish()),
+    attempt,
+    () => {},
+    new AbortController().signal,
+  );
+  if (legacy.kind === "finish") assert.deepEqual(legacy.sources, []);
+});
+
+test("sources transport rejects excessive, malformed, noncanonical or misattributed projections", async () => {
+  for (const sources of [
+    [{ ...source, ordinal: 2 }],
+    [{ ...source, href: "https://foreign.invalid" }],
+    [{ ...source, noteId: "fake" }],
+    [{ ...source, updatedAt: "invalid" }],
+    [{ ordinal: 1, state: "unavailable", noteId: sourceNoteId }],
+    Array.from({ length: 6 }, (_, index) => ({ ordinal: index + 1, state: "unavailable" })),
+    [source, { ...source, ordinal: 2 }],
+  ]) {
+    await assert.rejects(
+      consumeChatResponse(
+        sse(start() + delta() + sourceFinish(sources)),
+        attempt,
+        () => {},
+        new AbortController().signal,
+      ),
+      (error) => error instanceof TransportFailure && error.code === "PROTOCOL",
+    );
+  }
+  const view = sourceHistory();
+  for (const messages of [
+    { user: { ...view.messages[0], sources: [source] }, assistant: view.messages[1] },
+    { user: view.messages[0], assistant: { ...view.messages[1], status: "failed" } },
+    { user: view.messages[0], assistant: { ...view.messages[1], turnId: crypto.randomUUID() } },
+    { user: view.messages[0], assistant: { ...view.messages[1], id: view.messages[0]!.id } },
+  ])
+    await assert.rejects(
+      consumeChatResponse(
+        Response.json({ ok: true, replayed: true, abandoned: false, ...messages }),
+        attempt,
+        () => {},
+        new AbortController().signal,
+      ),
+      TransportFailure,
+    );
+});
+
+test("sources a footer appears only after persisted finish and lost acknowledgement recovers via history", async () => {
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  const f = fixture({
+    existing: true,
+    project: true,
+    fetch: async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            stream = controller;
+          },
+        }),
+        { headers: { "Content-Type": "text/event-stream" } },
+      ),
+  });
+  f.session.setDraft(attempt.content);
+  const sending = f.session.submit();
+  await until(() => f.sent.length === 1);
+  stream.enqueue(new TextEncoder().encode(start() + delta()));
+  await until(() => !!f.session.getSnapshot().messages.at(-1)!.content);
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources ?? [], []);
+  stream.enqueue(new TextEncoder().encode(sourceFinish()));
+  stream.close();
+  await sending;
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, [source]);
+  assert.equal(f.session.getSnapshot().messages.at(-1)!.id, assistantId);
+  const lost = fixture({
+    existing: true,
+    project: true,
+    fetch: async () => sse(start() + delta()),
+    read: async () => ok(sourceHistory()),
+  });
+  lost.session.setDraft(attempt.content);
+  await lost.session.submit();
+  assert.equal(lost.sent.length, 1);
+  assert.equal(lost.reads.length, 1);
+  assert.deepEqual(lost.session.getSnapshot().messages.at(-1)!.sources, [source]);
+});
+
+test("sources history revocation and authoritative empty arrays replace rather than union links", async () => {
+  let latest = sourceHistory([{ ordinal: 1, state: "unavailable" }]);
+  const f = fixture({
+    existing: true,
+    project: true,
+    initial: ok(sourceHistory()),
+    read: async () => ok(latest),
+  });
+  await f.session.reload(true);
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, [
+    { ordinal: 1, state: "unavailable" },
+  ]);
+  latest = sourceHistory([]);
+  await f.session.reload();
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, []);
+  assert.equal(f.sent.length, 0);
+});
+
+test("sources cached conversations clear links before rendering, preserve drafts and use fresh action reads", async () => {
+  let release!: (value: ReturnType<typeof ok<ChatView>>) => void;
+  const f = fixture({
+    existing: true,
+    project: true,
+    initial: ok(sourceHistory()),
+    read: () =>
+      new Promise((resolve) => {
+        release = resolve;
+      }),
+  });
+  const sessions = new ChatSessions();
+  sessions.select(conversationId, () => f.session);
+  f.session.setDraft("Keep draft");
+  // Active/promoted sessions retain the fresh stream projection.
+  sessions.select(conversationId, () => assert.fail(), f.session);
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, [source]);
+  sessions.select(conversationId, () => assert.fail());
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, []);
+  assert.equal(f.session.getSnapshot().needsReconcile, true);
+  assert.equal(f.session.getSnapshot().draft, "Keep draft");
+  const reading = f.session.reload(false, false);
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, []);
+  release(ok(sourceHistory([{ ordinal: 1, state: "unavailable" }])));
+  await reading;
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, [
+    { ordinal: 1, state: "unavailable" },
+  ]);
+  assert.equal(f.sent.length, 0);
+});
+
+test("sources stale older-page reads cannot resurrect links after cached-session invalidation", async () => {
+  let release!: (value: ReturnType<typeof ok<ChatView>>) => void;
+  let reads = 0;
+  const f = fixture({
+    existing: true,
+    project: true,
+    initial: ok(sourceHistory()),
+    read: async () =>
+      ++reads === 1
+        ? new Promise((resolve) => {
+            release = resolve;
+          })
+        : ok(sourceHistory([{ ordinal: 1, state: "unavailable" }])),
+  });
+  const observed: (SourceView[] | undefined)[] = [];
+  const older = f.session.reload(true);
+  f.session.invalidateSources();
+  f.session.subscribe(() => observed.push(f.session.getSnapshot().messages.at(-1)!.sources));
+  release(ok(sourceHistory()));
+  await older;
+  await until(() => reads === 2 && f.session.getSnapshot().phase === "idle");
+  assert.ok(observed.every((sources) => !sources?.some((item) => item.state === "available")));
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, [
+    { ordinal: 1, state: "unavailable" },
+  ]);
+});
+
+test("sources stale completed route snapshots cannot restore revoked links", async () => {
+  const f = fixture({
+    existing: true,
+    project: true,
+    initial: ok(sourceHistory([])),
+    read: async () => ok(sourceHistory([{ ordinal: 1, state: "unavailable" }])),
+  });
+  f.session.adopt(ok(sourceHistory()));
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, []);
+  await until(() => f.session.getSnapshot().phase === "idle");
+  assert.equal(f.reads.length, 1);
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, [
+    { ordinal: 1, state: "unavailable" },
+  ]);
+});
+
+test("sources finish rejects foreign project attribution and existing message-ID collisions", async () => {
+  for (const collision of [false, true]) {
+    const prior = sourceHistory([]);
+    prior.messages = prior.messages.map((message) => ({ ...message, turnId: crypto.randomUUID() }));
+    const f = fixture({
+      existing: true,
+      project: true,
+      initial: ok(prior),
+      read: async () => ok(prior),
+      fetch: async () =>
+        sse(
+          start() +
+            delta() +
+            sourceFinish(
+              collision
+                ? [source]
+                : [
+                    {
+                      ...source,
+                      projectId: conversationId,
+                      href: `/projects/${conversationId}/notes/${sourceNoteId}`,
+                    },
+                  ],
+            ),
+        ),
+    });
+    f.session.setDraft(attempt.content);
+    await f.session.submit();
+    assert.equal(f.session.getSnapshot().issue, "PROTOCOL");
+    assert.ok(f.session.getSnapshot().messages.every((message) => !message.sources?.length));
+  }
+});
+
+test("sources denied or corrupt history hides old links and blocks unsupported attribution", async () => {
+  const otherView = {
+    ...sourceHistory(),
+    conversation: { ...sourceHistory().conversation, id: projectId },
+    messages: sourceHistory().messages.map((message) => ({
+      ...message,
+      conversationId: projectId,
+    })),
+  };
+  for (const read of [
+    async () => unavailable(),
+    async () => ok(sourceHistory([{ ...source, href: "/bad" }])),
+    async () => ok(otherView),
+  ]) {
+    const f = fixture({ existing: true, project: true, initial: ok(sourceHistory()), read });
+    await f.session.reload();
+    assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, []);
+    assert.equal(f.session.getSnapshot().needsReconcile, true);
+  }
+  for (const view of [
+    otherView,
+    { ...sourceHistory(), conversation: { ...conversation, projectId: null } },
+    sourceHistory([
+      {
+        ...source,
+        projectId: conversationId,
+        href: `/projects/${conversationId}/notes/${sourceNoteId}`,
+      },
+    ]),
+  ]) {
+    const f = fixture({ existing: true, initial: ok(view) });
+    assert.equal(f.session.getSnapshot().needsReconcile, true);
+    assert.equal(f.session.getSnapshot().messages.length, 0);
+  }
+});
+
+test("sources footer escapes titles, preserves unavailable positions and does not link model citations", () => {
+  const message = { ...sourceHistory().messages[1]!, persisted: true };
+  const html = renderToStaticMarkup(
+    <RetrievedNotes
+      message={{ ...message, sources: [source, { ordinal: 2, state: "unavailable" }] }}
+    />,
+  );
+  assert.match(html, /Retrieved notes/);
+  assert.match(html, /Current &lt;script&gt;/);
+  assert.match(html, /Note unavailable/);
+  assert.match(html, /current note versions, not saved snapshots/);
+  assert.equal((html.match(/<a /g) ?? []).length, 1);
+  assert.ok(html.includes(source.href));
+  assert.doesNotMatch(html, /<script>/);
+  for (const patch of [
+    { sources: [] },
+    { proposal },
+    { persisted: false },
+    { role: "user" as const },
+    { status: "pending" as const },
+    { status: "failed" as const },
+    { status: "stopped" as const },
+  ])
+    assert.equal(renderToStaticMarkup(<RetrievedNotes message={{ ...message, ...patch }} />), "");
+  const modelText = renderToStaticMarkup(
+    <MessageContent content={`Invented [1] [99] [fake](${source.href}) https://evil.invalid`} />,
+  );
+  assert.doesNotMatch(modelText, /<a\b/);
+  const footer = readFileSync(new URL("./retrieved-notes.tsx", import.meta.url), "utf8");
+  assert.match(footer, /prefetch=\{false\}/);
+});
 
 // No browser, provider request or database connection is used in this file.
 test("SSE decodes split UTF-8, field names, JSON and CRLF across every byte boundary", async () => {
@@ -1237,6 +1576,7 @@ test("off-page unresolved saves remain dirty and expose the session guard to sig
         ...message,
         id: crypto.randomUUID(),
         proposal: null,
+        sources: message.sources ?? [],
         modelId: message.role === "assistant" ? "test-model" : null,
         createdAt: now,
         updatedAt: now,

@@ -3,7 +3,9 @@ import { cn } from "@solyn/ui/lib/utils";
 import { Plus, Pencil, MessageSquare } from "lucide-react";
 import Link from "next/link";
 
+import { searchNotes } from "@/features/workspace/actions";
 import Collection from "@/features/workspace/collection";
+import NoteSearch from "@/features/workspace/note-search";
 import { Breadcrumbs } from "@/features/workspace/feedback";
 import { formatDate, listKey, noteRow } from "@/features/workspace/presentation";
 import RetryPanel from "@/features/workspace/retry-panel";
@@ -63,7 +65,13 @@ export default async function ProjectPage({ params }: { params: Promise<{ projec
       <div className="section-heading mt-[24px] mb-[12px] flex flex-wrap items-baseline justify-between gap-[12px]">
         <h2 className="text-[14px]">Notes</h2>
       </div>
-      <Collection key={listKey(notes)} projectId={project.id} initial={notes.map(noteRow)} />
+      <NoteSearch
+        key={`${project.id}:${listKey(notes)}`}
+        projectId={project.id}
+        searchAction={searchNotes}
+      >
+        <Collection key={listKey(notes)} projectId={project.id} initial={notes.map(noteRow)} />
+      </NoteSearch>
     </div>
   );
 }

@@ -4,6 +4,7 @@ import {
   confirmNoteProposalInput,
   confirmationReceiptSchema,
   proposalViewSchema,
+  sourcesSchema,
   streamTurnInput,
   type ConfirmNoteProposalInput,
   type ProposalView,
@@ -11,6 +12,7 @@ import {
 import {
   consumeChatResponse,
   proposalMatchesMessage,
+  sourcesMatchMessage,
   safeIssue,
   TransportFailure,
   type Attempt,
@@ -72,9 +74,12 @@ export function messageStatus(message: UiMessage, busy: boolean) {
 }
 export class ChatSessions {
   private sessions = new Map<string, ChatSession>();
-  select(key: string, create: () => ChatSession) {
+  select(key: string, create: () => ChatSession, active: ChatSession | null = null) {
     const found = this.sessions.get(key);
-    if (found) return found;
+    if (found) {
+      if (found !== active) found.invalidateSources();
+      return found;
+    }
     const session = create();
     if (this.sessions.size >= 10) this.sessions.delete(this.sessions.keys().next().value!);
     this.sessions.set(key, session);
@@ -96,14 +101,16 @@ const savedMessages = (view: ChatView) => {
   const ids = new Set<string>();
   return view.messages.map((m) => {
     const proposal = m.proposal ? proposalViewSchema.parse(m.proposal) : null;
+    const sources = sourcesSchema.parse(m.sources ?? []);
     if (
+      !sourcesMatchMessage({ ...m, proposal, sources }, view.conversation.projectId) ||
       m.conversationId !== view.conversation.id ||
       !proposalMatchesMessage(proposal, m) ||
       (proposal && ids.has(proposal.id))
     )
       throw new TransportFailure("PROTOCOL");
     if (proposal) ids.add(proposal.id);
-    return { ...m, proposal, persisted: true };
+    return { ...m, proposal, sources, persisted: true };
   });
 };
 
@@ -115,6 +122,8 @@ export class ChatSession {
   private abortController: AbortController | null = null;
   private conversationId: string | null;
   private olderOffset = 0;
+  private sourceRead = 0;
+  private sourceEpoch = 0;
   constructor(
     private dependencies: {
       create: typeof createConversation;
@@ -136,7 +145,11 @@ export class ChatSession {
     let view = input.initial?.ok ? input.initial.data : null;
     let initialMessages: UiMessage[] = [];
     try {
-      if (view) initialMessages = savedMessages(view);
+      if (view) {
+        if (input.conversationId && view.conversation.id !== input.conversationId)
+          throw new TransportFailure("PROTOCOL");
+        initialMessages = savedMessages(view);
+      }
     } catch {
       view = null;
     }
@@ -358,6 +371,16 @@ export class ChatSession {
       !this.state.pendingTurn
     );
   }
+  // Called only when reactivating an inactive cached session, before rendering it.
+  invalidateSources() {
+    if (!this.conversationId) return;
+    this.sourceRead++;
+    this.sourceEpoch++;
+    this.set({
+      messages: this.state.messages.map((message) => ({ ...message, sources: [] })),
+      needsReconcile: true,
+    });
+  }
   stop() {
     if (!this.abortController) return;
     this.set({ phase: "stopping" });
@@ -365,6 +388,7 @@ export class ChatSession {
   }
   async reload(older = false, discardProposalEdits = true) {
     if (this.busy || !this.conversationId) return;
+    const sourceEpoch = this.sourceEpoch;
     this.set({ phase: "reloading" });
     try {
       await this.reconcile(older);
@@ -372,12 +396,25 @@ export class ChatSession {
         this.set({ proposalEdits: {} });
     } finally {
       this.set({ phase: "idle" });
+      // A cached-session return may have invalidated an outstanding older-page
+      // read. Its result is ignored; refresh after it settles, never resurrect it.
+      if (sourceEpoch !== this.sourceEpoch) void this.reload(false, false);
     }
   }
   adopt(initial: Awaited<ReturnType<typeof getConversation>>) {
     if (this.busy) return;
+    if (initial.ok && initial.data.conversation.id !== this.conversationId) return;
+    if (
+      this.state.messages.some((message) => message.sources?.length) ||
+      (initial.ok && initial.data.messages.some((message) => message.sources?.length))
+    ) {
+      // A route snapshot has no authorization freshness marker. Never let it
+      // restore a link after a newer action read has revoked/cleared that source.
+      this.invalidateSources();
+      void this.reload(false, false);
+      return;
+    }
     if (initial.ok) {
-      if (initial.data.conversation.id !== this.conversationId) return;
       const terminal = [...this.state.messages]
         .reverse()
         .find(
@@ -400,6 +437,7 @@ export class ChatSession {
   }
   private async reconcile(older = false, initial?: Awaited<ReturnType<typeof getConversation>>) {
     if (!this.conversationId) return;
+    const read = ++this.sourceRead;
     try {
       const offset = older ? this.olderOffset : 0;
       const result =
@@ -410,14 +448,17 @@ export class ChatSession {
           limit: 50,
           offset,
         }));
+      if (read !== this.sourceRead) return;
       if (!result.ok) {
         this.set({
+          messages: this.state.messages.map((message) => ({ ...message, sources: [] })),
           issue: result.error.code,
           needsReconcile: true,
         });
         return;
       }
       const view = result.data;
+      if (view.conversation.id !== this.conversationId) throw new TransportFailure("PROTOCOL");
       const page = savedMessages(view).map((message) => {
         const local = this.state.messages.find(
           (row) => row.turnId === message.turnId && row.role === message.role,
@@ -433,6 +474,15 @@ export class ChatSession {
       const previous = this.state.messages.filter((m) => m.persisted);
       this.olderOffset = offset + page.length;
       let messages = older ? mergeMessages(page, previous).slice(0, 500) : page;
+      // Replace projections, including []/unavailable, without changing existing
+      // message ordering or the proposal receipt safeguards. Superseded reads above
+      // cannot restore an older authorization result.
+      const projections = new Map(page.map((message) => [message.id, message.sources]));
+      messages = messages.map((message) =>
+        projections.has(message.id)
+          ? { ...message, sources: projections.get(message.id) }
+          : message,
+      );
       const attempt = this.state.attempt;
       const pair = attempt ? messages.filter((m) => m.turnId === attempt.turnId) : [];
       const resolved =
@@ -466,7 +516,9 @@ export class ChatSession {
             : null,
       });
     } catch {
+      if (read !== this.sourceRead) return;
       this.set({
+        messages: this.state.messages.map((message) => ({ ...message, sources: [] })),
         issue: "UNAVAILABLE",
         needsReconcile: true,
       });
@@ -482,6 +534,7 @@ export class ChatSession {
       return;
     }
     const controller = new AbortController();
+    const sourceEpoch = this.sourceEpoch;
     this.abortController = controller;
     this.set({
       phase: this.conversationId ? "sending" : "creating",
@@ -575,6 +628,23 @@ export class ChatSession {
         controller.signal,
       );
       if (outcome.kind === "finish") {
+        if (
+          !sourcesMatchMessage(
+            {
+              role: "assistant",
+              status: "completed",
+              sources: outcome.sources,
+              proposal: outcome.proposal,
+            },
+            this.state.conversation?.projectId ?? this.state.project?.id ?? null,
+          ) ||
+          this.state.messages.some(
+            (message) =>
+              message.id === outcome.messageId &&
+              (message.turnId !== attempt.turnId || message.role !== "assistant"),
+          )
+        )
+          throw new TransportFailure("PROTOCOL");
         confirmed = true;
         this.set({
           attempt: null,
@@ -588,17 +658,32 @@ export class ChatSession {
                   id: m.role === "assistant" ? outcome.messageId : m.id,
                   status: "completed",
                   proposal: m.role === "assistant" ? outcome.proposal : null,
+                  sources:
+                    m.role === "assistant" && sourceEpoch === this.sourceEpoch
+                      ? outcome.sources
+                      : [],
                 }
               : m,
           ),
         });
       } else if (outcome.kind === "replay") {
+        if (
+          !sourcesMatchMessage(
+            outcome.assistant,
+            this.state.conversation?.projectId ?? this.state.project?.id ?? null,
+          )
+        )
+          throw new TransportFailure("PROTOCOL");
         const terminal = outcome.assistant.status !== "pending";
         confirmed = terminal;
         this.set({
           messages: mergeMessages(
             this.state.messages,
-            [outcome.user, outcome.assistant].map((m) => ({ ...m, persisted: true })),
+            [outcome.user, outcome.assistant].map((m) => ({
+              ...m,
+              sources: sourceEpoch === this.sourceEpoch ? (m.sources ?? []) : [],
+              persisted: true,
+            })),
           ),
           pendingTurn: terminal ? null : { turnId: attempt.turnId, abandoned: outcome.abandoned },
           attempt: terminal ? null : attempt,
@@ -631,7 +716,8 @@ export class ChatSession {
     } finally {
       // Reads are recovery, never a second inference. Do not clear the attempt
       // merely because a request ended or a snapshot has not observed its commit.
-      if (this.conversationId && !confirmed) await this.reconcile();
+      if (this.conversationId && (!confirmed || sourceEpoch !== this.sourceEpoch))
+        await this.reconcile();
       if (!submitted && !retry && !this.state.draft) this.set({ draft: content });
       this.abortController = null;
       this.set({ phase: "idle" });

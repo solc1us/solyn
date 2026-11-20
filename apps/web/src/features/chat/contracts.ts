@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { createNoteInput } from "../workspace/contracts";
+import { createNoteInput, searchNotesInput } from "../workspace/contracts";
 
 export type ErrorCode =
   | "UNAUTHENTICATED"
@@ -48,7 +48,49 @@ export function isChatText(value: string) {
 export const streamTurnInput = beginTurnInput
   .pick({ conversationId: true, turnId: true, content: true })
   .extend({ content: content.max(CHAT_INPUT_LIMIT).refine(isChatText) });
-export const completeResponseInput = z.strictObject({ ...turn, content });
+const sourceTimestamp = z.iso.datetime().transform((value) => new Date(value).toISOString());
+// Private server completion metadata, never accepted by streamTurnInput or model tools.
+export const sourceRefsSchema = z
+  .array(z.strictObject({ noteId: uuid, projectId: uuid, retrievedUpdatedAt: sourceTimestamp }))
+  .min(1)
+  .max(5)
+  .refine((refs) => new Set(refs.map((ref) => ref.noteId)).size === refs.length);
+export type SourceRef = z.output<typeof sourceRefsSchema>[number];
+export const sourcesSchema = z
+  .array(
+    z.discriminatedUnion("state", [
+      z.strictObject({
+        ordinal: z.number().int().min(1).max(5),
+        state: z.literal("available"),
+        noteId: uuid,
+        projectId: uuid,
+        title: createNoteInput.shape.title.refine(isChatText),
+        href: z.string(),
+        retrievedUpdatedAt: sourceTimestamp,
+        updatedAt: sourceTimestamp,
+      }),
+      z.strictObject({ ordinal: z.number().int().min(1).max(5), state: z.literal("unavailable") }),
+    ]),
+  )
+  .max(5)
+  .refine(
+    (sources) =>
+      sources.every(
+        (source, index) =>
+          source.ordinal === index + 1 &&
+          (source.state === "unavailable" ||
+            source.href === `/projects/${source.projectId}/notes/${source.noteId}`),
+      ) &&
+      new Set(
+        sources.filter((source) => source.state === "available").map((source) => source.noteId),
+      ).size === sources.filter((source) => source.state === "available").length,
+  );
+export type SourceView = z.output<typeof sourcesSchema>[number];
+export const completeResponseInput = z.strictObject({
+  ...turn,
+  content,
+  sourceRefs: sourceRefsSchema.nullable().default(null),
+});
 export const endResponseInput = z.strictObject({
   ...turn,
   // Failed/stopped output may be empty or partial, but must never contain raw errors.
@@ -61,6 +103,8 @@ export const prepareNoteInput = z.strictObject({
   content: createNoteInput.shape.content.refine(isChatText),
   noteDate: createNoteInput.shape.noteDate.unwrap(),
 });
+// The conversation, not the model, supplies project scope and pagination.
+export const searchNotesToolInput = searchNotesInput.pick({ query: true });
 export const confirmNoteProposalInput = z.strictObject({
   proposalId: uuid,
   projectId: uuid,
@@ -79,7 +123,7 @@ export const confirmationReceiptSchema = z
   })
   .refine((value) => value.href === `/projects/${value.projectId}/notes/${value.noteId}`);
 export type NoteDraft = z.infer<typeof prepareNoteInput>;
-export const completeProposalInput = completeResponseInput.extend({ draft: prepareNoteInput });
+export const completeProposalInput = z.strictObject({ ...turn, content, draft: prepareNoteInput });
 export const proposalViewSchema = z
   .strictObject({
     id: uuid,

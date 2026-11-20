@@ -35,6 +35,9 @@ export async function updateProject(input: unknown) {
 export async function listNotes(input: unknown) {
   return workspace.listNotes(input);
 }
+export async function searchNotes(input: unknown) {
+  return workspace.searchNotes(input);
+}
 export async function getNote(input: unknown) {
   return workspace.getNote(input);
 }
