@@ -484,6 +484,7 @@ export default function ChatScreen({
           </div>
           <form
             ref={form}
+            data-unsaved={session.hasProposalChanges ? "true" : "false"}
             className="chat-composer rounded-[8px] border border-input bg-canvas p-[10px] focus-within:border-ring"
             onSubmit={(event) => {
               event.preventDefault();

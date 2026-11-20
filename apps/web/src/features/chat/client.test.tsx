@@ -1228,6 +1228,52 @@ test("still-proposed recovery freezes the exact submitted payload and permits on
   assert.equal(f.session.getSnapshot().proposalReceipts[proposal.id]!.status, "confirmed");
 });
 
+test("off-page unresolved saves remain dirty and expose the session guard to sign-out", async () => {
+  const view = proposalView();
+  const latest = {
+    ...view,
+    messages: Array.from({ length: 25 }, () =>
+      pair("completed", "Newer saved response", crypto.randomUUID()).map((message) => ({
+        ...message,
+        id: crypto.randomUUID(),
+        proposal: null,
+      })),
+    ).flat(),
+  };
+  let recoveries = 0;
+  const f = fixture({
+    existing: true,
+    initial: ok(view),
+    read: async () => ok(latest),
+    confirm: async () => unavailable(),
+    recoverProposal: async () => (++recoveries === 1 ? unavailable() : ok(savedProposal)),
+  });
+  f.session.editProposal(proposal.id, { projectId });
+  await f.session.confirmProposal(proposal.id);
+  const payload = f.session.getSnapshot().proposalSaves[proposal.id]!.payload;
+  await f.session.reload();
+  assert.equal(
+    f.session.getSnapshot().messages.some((message) => message.proposal),
+    false,
+  );
+  assert.deepEqual(f.session.getSnapshot().proposalEdits, {});
+  assert.deepEqual(f.session.getSnapshot().proposalSaves[proposal.id]!.payload, payload);
+  assert.equal(f.session.hasProposalChanges, true);
+  assert.equal(f.confirms.length, 1);
+
+  // SignOutButton scans forms, including when the individual draft is off-page.
+  // Check the owner wiring as well as the state; mounted-browser acceptance
+  // separately exercises the real click guard with mocked auth/actions.
+  const source = readFileSync(new URL("./chat-screen.tsx", import.meta.url), "utf8");
+  const composer = source.match(/<form\s+ref=\{form\}[\s\S]*?onSubmit=/)?.[0];
+  assert.ok(composer);
+  assert.match(composer, /data-unsaved=\{session\.hasProposalChanges \? "true" : "false"\}/);
+
+  await f.session.recoverProposal(proposal.id);
+  assert.equal(f.session.hasProposalChanges, false);
+  assert.equal(f.confirms.length, 1);
+});
+
 test("failed recovery retains Save unconfirmed, blocks writes and allows another explicit read", async () => {
   let reads = 0;
   const f = fixture({
