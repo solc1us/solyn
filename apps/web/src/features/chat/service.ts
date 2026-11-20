@@ -3,8 +3,9 @@ import {
   chatConversations as conversations,
   chatMessages as messages,
 } from "@solyn/db/schema/chat";
-import { projects } from "@solyn/db/schema/workspace";
-import { and, asc, desc, eq, exists, isNull, ne, or, sql } from "drizzle-orm";
+import { notes, projects } from "@solyn/db/schema/workspace";
+import { noteProposals } from "@solyn/db/schema/note-proposals";
+import { and, asc, desc, eq, exists, inArray, isNull, ne, or, sql, type SQL } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { z } from "zod";
 
@@ -108,6 +109,87 @@ export function createChatService({
         },
       };
     }
+  }
+
+  async function readProposals(tx: Transaction, ownerId: string, condition: SQL) {
+    const rows = await tx
+      .select({
+        id: noteProposals.id,
+        sourceMessageId: noteProposals.sourceMessageId,
+        projectHint: noteProposals.projectHint,
+        title: noteProposals.title,
+        content: noteProposals.content,
+        noteDate: noteProposals.noteDate,
+        status: noteProposals.status,
+        noteId: noteProposals.noteId,
+        approvedProjectId: noteProposals.approvedProjectId,
+        conversationId: messages.conversationId,
+        turnId: messages.turnId,
+        scopeId: conversations.projectId,
+        scopeName: projects.name,
+      })
+      .from(noteProposals)
+      .innerJoin(messages, eq(messages.id, noteProposals.sourceMessageId))
+      .innerJoin(conversations, eq(conversations.id, messages.conversationId))
+      .leftJoin(projects, eq(projects.id, conversations.projectId))
+      .where(
+        and(
+          condition,
+          owned(ownerId),
+          eq(messages.role, "assistant"),
+          eq(messages.status, "completed"),
+        ),
+      );
+    const result = new Map<string, contracts.ProposalView>();
+    for (const row of rows) {
+      let receipt: contracts.ProposalView["receipt"] = null;
+      if (row.status === "confirmed") {
+        if (!row.noteId || !row.approvedProjectId) throw missing();
+        const [note] = await tx
+          .select({ id: notes.id })
+          .from(notes)
+          .innerJoin(projects, eq(projects.id, notes.projectId))
+          .where(
+            and(
+              eq(notes.id, row.noteId),
+              eq(notes.projectId, row.approvedProjectId),
+              eq(projects.ownerId, ownerId),
+            ),
+          );
+        if (!note || (row.scopeId && row.scopeId !== row.approvedProjectId)) throw missing();
+        receipt = {
+          noteId: row.noteId,
+          projectId: row.approvedProjectId,
+          href: `/projects/${row.approvedProjectId}/notes/${row.noteId}`,
+        };
+      }
+      const view = contracts.proposalViewSchema.parse({
+        id: row.id,
+        sourceMessageId: row.sourceMessageId,
+        conversationId: row.conversationId,
+        turnId: row.turnId,
+        status: row.status,
+        draft: {
+          projectHint: row.projectHint,
+          title: row.title,
+          content: row.content,
+          noteDate: row.noteDate,
+        },
+        scopedProject: row.scopeId ? { id: row.scopeId, name: row.scopeName } : null,
+        receipt,
+      });
+      if (result.has(view.sourceMessageId)) throw new Error("Duplicate proposal source");
+      result.set(view.sourceMessageId, view);
+    }
+    return result;
+  }
+  async function proposalFor(tx: Transaction, ownerId: string, message: Message) {
+    if (message.role !== "assistant" || message.status !== "completed") return null;
+    return (
+      (await readProposals(tx, ownerId, eq(noteProposals.sourceMessageId, message.id))).get(
+        message.id,
+      ) ?? null
+    );
   }
 
   async function databaseNow(tx: Transaction) {
@@ -226,6 +308,19 @@ export function createChatService({
           .offset(value.offset),
       );
     },
+    getNoteProposal(input: unknown) {
+      return run(contracts.getProposalInput, input, (value, ownerId) =>
+        db.transaction(
+          async (tx) => {
+            const found = await readProposals(tx, ownerId, eq(noteProposals.id, value.proposalId));
+            const proposal = [...found.values()][0];
+            if (!proposal) throw missing();
+            return proposal;
+          },
+          { isolationLevel: "repeatable read", accessMode: "read only" },
+        ),
+      );
+    },
     getConversation(input: unknown) {
       return run(contracts.getConversationInput, input, async (value, ownerId) =>
         db.transaction(
@@ -253,9 +348,18 @@ export function createChatService({
               .where(and(ownedMessages(ownerId, conversation.id), eq(messages.status, "pending")))
               .limit(1);
             const now = await databaseNow(tx);
+            const sourceIds = page
+              .filter((m) => m.role === "assistant" && m.status === "completed")
+              .map((m) => m.id);
+            const proposals = sourceIds.length
+              ? await readProposals(tx, ownerId, inArray(noteProposals.sourceMessageId, sourceIds))
+              : new Map<string, contracts.ProposalView>();
             return {
               conversation,
-              messages: value.latest ? page.reverse() : page,
+              messages: (value.latest ? page.reverse() : page).map((m) => ({
+                ...m,
+                proposal: proposals.get(m.id) ?? null,
+              })),
               pendingTurn: pending
                 ? { turnId: pending.turnId, abandoned: abandoned(pending, now) }
                 : null,
@@ -339,7 +443,14 @@ export function createChatService({
               if (existing.length !== 2 || !user || !assistant) throw new Error("Incomplete turn");
               if (user.content !== value.content || assistant.modelId !== value.modelId)
                 throw conflict();
-              return { user, assistant, replayed: true, abandoned: abandoned(assistant, now) };
+              const proposal = await proposalFor(tx, ownerId, assistant);
+              return {
+                user,
+                assistant,
+                replayed: true,
+                abandoned: abandoned(assistant, now),
+                proposal,
+              };
             }
             const [pending] = await tx
               .select(messageFields)
@@ -380,7 +491,98 @@ export function createChatService({
             const assistant = rows.find((row) => row.role === "assistant");
             if (rows.length !== 2 || !user || !assistant) throw new Error("Missing turn insert");
             await touch(tx, ownerId, conversation.id, createdAt);
-            return { user, assistant, replayed: false, abandoned: false };
+            return { user, assistant, replayed: false, abandoned: false, proposal: null };
+          },
+          { isolationLevel: "read committed" },
+        ),
+      );
+    },
+    completeProposal(input: unknown) {
+      return run(contracts.completeProposalInput, input, (value, ownerId) =>
+        db.transaction(
+          async (tx) => {
+            const conversation = await lock(tx, ownerId, value.conversationId);
+            const [response] = await tx
+              .select(messageFields)
+              .from(messages)
+              .where(
+                and(
+                  ownedMessages(ownerId, conversation.id),
+                  eq(messages.turnId, value.turnId),
+                  eq(messages.role, "assistant"),
+                ),
+              );
+            if (!response) throw missing();
+            if (response.status !== "pending") {
+              const proposal = await proposalFor(tx, ownerId, response);
+              if (
+                response.status !== "completed" ||
+                response.content !== value.content ||
+                !proposal ||
+                JSON.stringify(proposal.draft) !== JSON.stringify(value.draft)
+              )
+                throw conflict();
+              return { ...response, proposal };
+            }
+            let projectName: string | null = null;
+            if (conversation.projectId) {
+              const [project] = await tx
+                .select({ name: projects.name })
+                .from(projects)
+                .where(and(eq(projects.id, conversation.projectId), eq(projects.ownerId, ownerId)))
+                .for("share");
+              if (!project) throw missing();
+              projectName = project.name;
+            }
+            const [user] = await tx
+              .select({ content: messages.content })
+              .from(messages)
+              .where(
+                and(
+                  ownedMessages(ownerId, conversation.id),
+                  eq(messages.turnId, value.turnId),
+                  eq(messages.role, "user"),
+                ),
+              );
+            if (!user) throw missing();
+            if (!contracts.proposalMatchesContext(value.draft, user.content, projectName))
+              throw new ChatError(
+                "INVALID_INPUT",
+                "The draft does not match the supplied context.",
+              );
+            const now = await databaseNow(tx);
+            if (abandoned(response, now)) throw conflict();
+            const updatedAt = activityTime(now, conversation.updatedAt);
+            const completed = await setTerminal(
+              tx,
+              ownerId,
+              response,
+              "completed",
+              value.content,
+              updatedAt,
+            );
+            const [inserted] = await tx
+              .insert(noteProposals)
+              .values({
+                sourceMessageId: response.id,
+                ...value.draft,
+              })
+              .returning({ id: noteProposals.id });
+            if (!inserted) throw new Error("Missing proposal insert");
+            await touch(tx, ownerId, conversation.id, updatedAt);
+            const proposal = contracts.proposalViewSchema.parse({
+              id: inserted.id,
+              sourceMessageId: response.id,
+              conversationId: conversation.id,
+              turnId: value.turnId,
+              status: "proposed",
+              draft: value.draft,
+              scopedProject: conversation.projectId
+                ? { id: conversation.projectId, name: projectName }
+                : null,
+              receipt: null,
+            });
+            return { ...completed, proposal };
           },
           { isolationLevel: "read committed" },
         ),

@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { proposalViewSchema, type ProposalView } from "./contracts";
+
 export const issueMessages = {
   UNAUTHENTICATED: "Sign in to continue. Your draft is still here.",
   NOT_FOUND: "This conversation or project is unavailable.",
@@ -43,8 +45,22 @@ const messageSchema = z.object({
   role: z.enum(["user", "assistant"]),
   content: z.string().max(100_000),
   status: z.enum(["pending", "completed", "failed", "stopped"]),
+  proposal: proposalViewSchema.nullable().optional(),
 });
 export type WireMessage = z.infer<typeof messageSchema>;
+export function proposalMatchesMessage(
+  proposal: ProposalView | null | undefined,
+  message: Pick<WireMessage, "id" | "conversationId" | "turnId" | "role" | "status">,
+) {
+  return (
+    !proposal ||
+    (message.role === "assistant" &&
+      message.status === "completed" &&
+      proposal.sourceMessageId === message.id &&
+      proposal.conversationId === message.conversationId &&
+      proposal.turnId === message.turnId)
+  );
+}
 export type Attempt = { conversationId: string; turnId: string; content: string };
 export type StreamEvent = { event: string; data: string };
 
@@ -105,7 +121,7 @@ export async function* parseSSE(
 }
 
 type Outcome =
-  | { kind: "finish"; messageId: string }
+  | { kind: "finish"; messageId: string; proposal: ProposalView | null }
   | { kind: "replay"; user: WireMessage; assistant: WireMessage; abandoned: boolean }
   | { kind: "error"; code: Issue; confirmed: boolean; status?: "failed" | "stopped" }
   | { kind: "rejected"; code: Issue };
@@ -127,10 +143,11 @@ export async function consumeChatResponse(
         abandoned: z.boolean(),
         user: messageSchema,
         assistant: messageSchema,
+        proposal: proposalViewSchema.nullable().default(null),
       })
       .safeParse(body);
     if (!parsed.success) throw new TransportFailure("PROTOCOL");
-    const { user, assistant, abandoned } = parsed.data;
+    const { user, assistant, abandoned, proposal } = parsed.data;
     if (
       [user, assistant].some(
         (m) => m.conversationId !== attempt.conversationId || m.turnId !== attempt.turnId,
@@ -138,10 +155,13 @@ export async function consumeChatResponse(
       user.role !== "user" ||
       user.status !== "completed" ||
       user.content !== attempt.content ||
-      assistant.role !== "assistant"
+      assistant.role !== "assistant" ||
+      user.proposal ||
+      !proposalMatchesMessage(proposal, assistant) ||
+      (assistant.proposal && assistant.proposal.id !== proposal?.id)
     )
       throw new TransportFailure("PROTOCOL");
-    return { kind: "replay", user, assistant, abandoned };
+    return { kind: "replay", user, assistant: { ...assistant, proposal }, abandoned };
   }
   if (!response.ok || type !== "text/event-stream" || !response.body)
     throw new TransportFailure("NETWORK");
@@ -171,10 +191,20 @@ export async function consumeChatResponse(
           status: z.literal("completed"),
           persisted: z.literal(true),
           messageId: z.uuid(),
+          proposal: proposalViewSchema.nullable().default(null),
         })
         .safeParse(body);
       if (!started || !length || !parsed.success) throw new TransportFailure("PROTOCOL");
-      return { kind: "finish", messageId: parsed.data.messageId };
+      if (
+        !proposalMatchesMessage(parsed.data.proposal, {
+          ...attempt,
+          id: parsed.data.messageId,
+          role: "assistant",
+          status: "completed",
+        })
+      )
+        throw new TransportFailure("PROTOCOL");
+      return { kind: "finish", messageId: parsed.data.messageId, proposal: parsed.data.proposal };
     } else {
       const parsed = z
         .object({

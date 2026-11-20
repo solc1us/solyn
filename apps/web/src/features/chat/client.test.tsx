@@ -15,6 +15,8 @@ import {
   type ChatView,
 } from "./client-state";
 import { MessageContent } from "./message-content";
+import { ProposalPreview } from "./proposal-preview";
+import { PROPOSAL_MESSAGE, type ProposalView } from "./contracts";
 import {
   consumeChatResponse,
   parseSSE,
@@ -106,6 +108,7 @@ function fixture(
       project: scope,
       messages: database.map((m) => ({
         ...m,
+        proposal: m.proposal ?? null,
         modelId: m.role === "assistant" ? "test-model" : null,
         createdAt: now,
         updatedAt: now,
@@ -906,4 +909,211 @@ test("answer formatting escapes raw HTML/URLs and renders text, code, headings a
   assert.match(markup, /&lt;script&gt;/);
   assert.match(markup, /&lt;img/);
   assert.doesNotMatch(markup, /<script|<img|href=|dangerouslySetInnerHTML/);
+});
+
+const proposal: ProposalView = {
+  id: "77777777-7777-4777-8777-777777777777",
+  sourceMessageId: assistantId,
+  conversationId,
+  turnId,
+  status: "proposed",
+  draft: {
+    projectHint: "Ambiguous name",
+    title: "Original title",
+    content: "  Original content\n",
+    noteDate: null,
+  },
+  scopedProject: null,
+  receipt: null,
+};
+function proposalFinish(value: unknown = proposal) {
+  return frame("finish", {
+    turnId,
+    messageId: assistantId,
+    status: "completed",
+    persisted: true,
+    proposal: value,
+  });
+}
+function proposalView(): ChatView {
+  const f = fixture();
+  f.save("completed", PROPOSAL_MESSAGE);
+  return {
+    ...f.view(),
+    messages: f
+      .view()
+      .messages.map((m) => ({ ...m, proposal: m.role === "assistant" ? proposal : null })),
+  };
+}
+
+test("proposal finish validates source identity and exposes a preview only after matching persisted finish", async () => {
+  const result = await consumeChatResponse(
+    sse(start() + delta(PROPOSAL_MESSAGE) + proposalFinish()),
+    attempt,
+    () => {},
+    new AbortController().signal,
+  );
+  assert.equal(result.kind, "finish");
+  if (result.kind === "finish") assert.deepEqual(result.proposal, proposal);
+  for (const value of [
+    { ...proposal, sourceMessageId: projectId },
+    { ...proposal, turnId: projectId },
+    { ...proposal, conversationId: projectId },
+    { ...proposal, status: "confirmed" },
+    { ...proposal, draft: { ...proposal.draft, content: "bad\u0000" } },
+    { ...proposal, draft: { ...proposal.draft, noteDate: "2026-02-30" } },
+    { ...proposal, receipt: { noteId: projectId, projectId, href: "javascript:alert(1)" } },
+  ])
+    await assert.rejects(
+      consumeChatResponse(
+        sse(start() + delta() + proposalFinish(value)),
+        attempt,
+        () => {},
+        new AbortController().signal,
+      ),
+      TransportFailure,
+    );
+});
+
+test("terminal JSON replay returns its original proposal without another request or inference", async () => {
+  const messages = pair("completed", PROPOSAL_MESSAGE);
+  const f = fixture({
+    existing: true,
+    fetch: async () =>
+      Response.json({
+        ok: true,
+        replayed: true,
+        abandoned: false,
+        user: messages[0],
+        assistant: messages[1],
+        proposal,
+      }),
+  });
+  f.session.setDraft(attempt.content);
+  await f.session.submit();
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.session.getSnapshot().messages.at(-1)!.proposal!.id, proposal.id);
+  assert.equal(f.session.getSnapshot().messages.at(-1)!.persisted, true);
+  assert.equal(f.reads.length, 0);
+});
+
+test("uncertain finalization reloads the original durable draft, never automatically regenerates", async () => {
+  const view = proposalView();
+  const f = fixture({
+    existing: true,
+    fetch: async () => sse(start() + delta(PROPOSAL_MESSAGE)),
+    read: async () => ok(view),
+  });
+  f.session.setDraft(attempt.content);
+  await f.session.submit();
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.reads.length, 1);
+  const message = f.session.getSnapshot().messages.at(-1)!;
+  assert.equal(message.proposal!.id, proposal.id);
+  assert.equal(message.persisted, true);
+  assert.equal(f.session.getSnapshot().attempt, null);
+});
+
+test("proposal edits/project choice remain local; explicit history reload restores original, no network writes", async () => {
+  const view = proposalView();
+  const f = fixture({ existing: true, initial: ok(view), read: async () => ok(view) });
+  assert.equal(f.session.hasProposalChanges, false);
+  f.session.editProposal(proposal.id, {
+    title: "Edited",
+    content: "Changed\n",
+    projectId,
+    noteDate: "2020-01-01",
+  });
+  assert.equal(f.session.hasProposalChanges, true);
+  assert.deepEqual(f.sent, []);
+  assert.deepEqual(f.reads, []);
+  assert.deepEqual(f.creates, []);
+  assert.equal(
+    f.session.getSnapshot().messages.at(-1)!.proposal!.draft.content,
+    proposal.draft.content,
+  );
+  await f.session.reload();
+  assert.equal(f.session.hasProposalChanges, false);
+  assert.deepEqual(f.session.getSnapshot().proposalEdits, {});
+  assert.equal(f.session.getSnapshot().messages.at(-1)!.proposal!.draft.noteDate, null);
+  f.session.editProposal(proposal.id, { title: proposal.draft.title });
+  assert.equal(f.session.hasProposalChanges, false);
+  const remounted = fixture({ existing: true, initial: ok(view) });
+  assert.deepEqual(remounted.session.getSnapshot().proposalEdits, {});
+});
+
+test("automatic stale-snapshot recovery and failed explicit reload preserve local edits", async () => {
+  const view = proposalView();
+  const f = fixture({ existing: true, initial: ok(view), read: async () => ok(view) });
+  f.session.editProposal(proposal.id, { title: "Keep local title" });
+  f.session.adopt(ok({ ...view, messages: [] }));
+  await until(() => !f.session.busy);
+  assert.equal(f.reads.length, 1);
+  assert.equal(f.session.getSnapshot().proposalEdits[proposal.id]!.title, "Keep local title");
+  const denied = fixture({
+    existing: true,
+    initial: ok(view),
+    read: async () => ({
+      ok: false,
+      error: { code: "UNAUTHENTICATED", message: "private sentinel" },
+    }),
+  });
+  denied.session.editProposal(proposal.id, { title: "Keep on expiry" });
+  await denied.session.reload();
+  assert.equal(denied.session.hasProposalChanges, true);
+  assert.equal(denied.session.getSnapshot().issue, "UNAUTHENTICATED");
+});
+
+test("invalid proposal in history fails closed instead of mounting a foreign preview", () => {
+  const view = proposalView();
+  view.messages.at(-1)!.proposal = { ...proposal, conversationId: projectId };
+  const f = fixture({ existing: true, initial: ok(view) });
+  assert.equal(f.session.getSnapshot().needsReconcile, true);
+  assert.deepEqual(f.session.getSnapshot().messages, []);
+});
+
+test("preview renders escaped editable original fields, nullable date and no save or confirmation action", () => {
+  let loads = 0;
+  const markup = renderToStaticMarkup(
+    <ProposalPreview
+      proposal={{
+        ...proposal,
+        draft: { ...proposal.draft, title: "<script>not executable</script>" },
+      }}
+      loadProjects={async () => {
+        loads++;
+        return ok([]);
+      }}
+      change={() => {}}
+    />,
+  );
+  assert.equal(loads, 0);
+  assert.match(markup, /Note draft — not saved as a note/);
+  assert.match(markup, /general chat/);
+  assert.match(markup, /Select a project explicitly/);
+  assert.match(markup, /Ambiguous name/);
+  assert.match(markup, /&lt;script&gt;/);
+  assert.match(markup, /type="date"/);
+  assert.match(markup, /data-unsaved="false"/);
+  assert.doesNotMatch(markup, /<script|type="submit"|confirmNoteProposal/);
+  const edited = renderToStaticMarkup(
+    <ProposalPreview
+      proposal={proposal}
+      edit={{ projectId, title: "", content: "", noteDate: "2026-02-30" }}
+      loadProjects={async () => ok([])}
+      change={() => {}}
+    />,
+  );
+  assert.match(edited, /data-unsaved="true"/);
+  assert.match(edited, /Local changes — not saved/);
+  assert.match(edited, /role="alert"/);
+  const scoped = renderToStaticMarkup(
+    <ProposalPreview
+      proposal={{ ...proposal, scopedProject: { id: projectId, name: "Owned project" } }}
+      loadProjects={async () => ok([])}
+      change={() => {}}
+    />,
+  );
+  assert.match(scoped, /Project: Owned project/);
+  assert.doesNotMatch(scoped, /<select/);
 });

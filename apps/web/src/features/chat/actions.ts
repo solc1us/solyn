@@ -16,6 +16,15 @@ export async function createConversation(input: unknown) {
 export async function listConversations(input: unknown = {}) {
   return chat.listConversations(input);
 }
+export async function getNoteProposal(input: unknown) {
+  return chat.getNoteProposal(input);
+}
+export async function listProposalProjects(input: unknown = {}) {
+  const result = await workspace.listProjects(input);
+  return result.ok
+    ? { ok: true as const, data: result.data.map(({ id, name }) => ({ id, name })) }
+    : result;
+}
 export async function getConversation(input: unknown): Promise<ChatResult<View>> {
   const result = await chat.getConversation(input);
   if (!result.ok) return result;

@@ -1,7 +1,8 @@
 import type { createConversation, getConversation } from "./actions";
-import { streamTurnInput } from "./contracts";
+import { proposalViewSchema, streamTurnInput, type ProposalView } from "./contracts";
 import {
   consumeChatResponse,
+  proposalMatchesMessage,
   safeIssue,
   TransportFailure,
   type Attempt,
@@ -12,6 +13,18 @@ import {
 export type ChatView = Extract<Awaited<ReturnType<typeof getConversation>>, { ok: true }>["data"];
 export type ProjectScope = { id: string; name: string } | null;
 export type UiMessage = WireMessage & { persisted: boolean };
+export type ProposalEdit = { projectId: string; title: string; content: string; noteDate: string };
+export function originalProposalEdit(proposal: ProposalView): ProposalEdit {
+  return {
+    projectId: proposal.scopedProject?.id ?? "",
+    title: proposal.draft.title,
+    content: proposal.draft.content,
+    noteDate: proposal.draft.noteDate ?? "",
+  };
+}
+export function proposalEditDirty(proposal: ProposalView, edit?: ProposalEdit) {
+  return !!edit && JSON.stringify(originalProposalEdit(proposal)) !== JSON.stringify(edit);
+}
 export type SessionState = {
   conversation: ChatView["conversation"] | null;
   project: ProjectScope;
@@ -25,6 +38,7 @@ export type SessionState = {
   pendingTurn: ChatView["pendingTurn"];
   hasOlder: boolean;
   viewingOlder: boolean;
+  proposalEdits: Record<string, ProposalEdit>;
 };
 export function shouldSend(event: {
   key: string;
@@ -62,7 +76,20 @@ export function mergeMessages(first: UiMessage[], second: UiMessage[]) {
   const replaced = new Set(second.map((m) => `${m.turnId}:${m.role}`));
   return [...first.filter((m) => !replaced.has(`${m.turnId}:${m.role}`)), ...second];
 }
-const savedMessages = (view: ChatView) => view.messages.map((m) => ({ ...m, persisted: true }));
+const savedMessages = (view: ChatView) => {
+  const ids = new Set<string>();
+  return view.messages.map((m) => {
+    const proposal = m.proposal ? proposalViewSchema.parse(m.proposal) : null;
+    if (
+      m.conversationId !== view.conversation.id ||
+      !proposalMatchesMessage(proposal, m) ||
+      (proposal && ids.has(proposal.id))
+    )
+      throw new TransportFailure("PROTOCOL");
+    if (proposal) ids.add(proposal.id);
+    return { ...m, proposal, persisted: true };
+  });
+};
 
 // A small per-view state machine, not an inference retry layer. Instances live
 // only inside the mounted chat screen; no browser storage or shared user cache.
@@ -88,12 +115,18 @@ export class ChatSession {
     },
   ) {
     this.conversationId = input.conversationId ?? null;
-    const view = input.initial?.ok ? input.initial.data : null;
+    let view = input.initial?.ok ? input.initial.data : null;
+    let initialMessages: UiMessage[] = [];
+    try {
+      if (view) initialMessages = savedMessages(view);
+    } catch {
+      view = null;
+    }
     this.olderOffset = view?.messages.length ?? 0;
     this.state = {
       conversation: view?.conversation ?? null,
       project: view?.project ?? input.project,
-      messages: view ? savedMessages(view) : [],
+      messages: initialMessages,
       draft: "",
       phase: "idle",
       issue: input.initial && !input.initial.ok ? input.initial.error.code : null,
@@ -103,6 +136,7 @@ export class ChatSession {
       pendingTurn: view?.pendingTurn ?? null,
       hasOlder: (view?.messages.length ?? 0) === 50,
       viewingOlder: false,
+      proposalEdits: {},
     };
   }
   getSnapshot = () => this.state;
@@ -118,6 +152,20 @@ export class ChatSession {
   }
   setDraft(value: string) {
     this.set({ draft: value });
+  }
+  editProposal(id: string, patch: Partial<ProposalEdit>) {
+    const proposal = this.state.messages.find(
+      (m) => m.persisted && m.proposal?.id === id,
+    )?.proposal;
+    if (!proposal || proposal.status !== "proposed") return;
+    const next = { ...(this.state.proposalEdits[id] ?? originalProposalEdit(proposal)), ...patch };
+    const edits = { ...this.state.proposalEdits };
+    if (proposalEditDirty(proposal, next)) edits[id] = next;
+    else delete edits[id];
+    this.set({ proposalEdits: edits });
+  }
+  get hasProposalChanges() {
+    return Object.keys(this.state.proposalEdits).length > 0;
   }
   get busy() {
     return this.state.phase !== "idle";
@@ -146,11 +194,13 @@ export class ChatSession {
     this.set({ phase: "stopping" });
     this.abortController.abort();
   }
-  async reload(older = false) {
+  async reload(older = false, discardProposalEdits = true) {
     if (this.busy || !this.conversationId) return;
     this.set({ phase: "reloading" });
     try {
       await this.reconcile(older);
+      if (!older && discardProposalEdits && !this.state.needsReconcile)
+        this.set({ proposalEdits: {} });
     } finally {
       this.set({ phase: "idle" });
     }
@@ -173,7 +223,7 @@ export class ChatSession {
       // An RSC read can have started before an acknowledged terminal commit.
       // Read again after that acknowledgement instead of downgrading saved UI.
       if (terminal && (!observed || observed.status === "pending")) {
-        void this.reload();
+        void this.reload(false, false);
         return;
       }
     }
@@ -368,6 +418,7 @@ export class ChatSession {
                   persisted: true,
                   id: m.role === "assistant" ? outcome.messageId : m.id,
                   status: "completed",
+                  proposal: m.role === "assistant" ? outcome.proposal : null,
                 }
               : m,
           ),
