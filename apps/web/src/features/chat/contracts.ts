@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { createNoteInput } from "../workspace/contracts";
+import { createNoteInput, searchNotesInput } from "../workspace/contracts";
 
 export type ErrorCode =
   | "UNAUTHENTICATED"
@@ -61,6 +61,8 @@ export const prepareNoteInput = z.strictObject({
   content: createNoteInput.shape.content.refine(isChatText),
   noteDate: createNoteInput.shape.noteDate.unwrap(),
 });
+// The conversation, not the model, supplies project scope and pagination.
+export const searchNotesToolInput = searchNotesInput.pick({ query: true });
 export const confirmNoteProposalInput = z.strictObject({
   proposalId: uuid,
   projectId: uuid,

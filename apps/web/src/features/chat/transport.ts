@@ -16,6 +16,7 @@ export const issueMessages = {
   PROVIDER_NETWORK: "The provider could not finish. Check saved history before continuing.",
   PROVIDER_TIMEOUT: "The response timed out. Check saved history.",
   PROVIDER_REJECTED: "The provider could not process this message.",
+  SEARCH_UNAVAILABLE: "Project note search is unavailable. Try again in a new turn.",
   EMPTY_RESPONSE: "The provider returned no answer.",
   OUTPUT_LIMIT: "The answer reached its limit and is incomplete.",
   CLIENT_ABORTED: "Stop requested. Check saved history for the final status.",
