@@ -25,6 +25,7 @@ test("chat adds exactly the approved columns, UUID keys and text Better Auth own
       "content",
       "status",
       "model_id",
+      "source_refs",
       "created_at",
       "updated_at",
     ],
@@ -33,6 +34,9 @@ test("chat adds exactly the approved columns, UUID keys and text Better Auth own
   assert.equal(chatConversations.projectId.notNull, false);
   assert.equal(chatConversations.projectId.hasDefault, false);
   assert.equal(chatMessages.modelId.notNull, false);
+  assert.equal(chatMessages.sourceRefs.notNull, false);
+  assert.equal(chatMessages.sourceRefs.hasDefault, false);
+  assert.equal(chatMessages.sourceRefs.getSQLType(), "jsonb");
   for (const table of [chatConversations, chatMessages]) {
     assert.equal(table.id.getSQLType(), "uuid");
     assert.equal(table.id.primary, true);
@@ -91,6 +95,49 @@ test("text checks enforce roles, statuses and completed/model-free user messages
   assert.match(dialect.sqlToQuery(pendingIndex.config.where!).sql, /"status" = 'pending'/);
   assert.equal(config.indexes.length, 2);
   assert.equal(getTableConfig(chatConversations).indexes.length, 1);
+});
+
+test("source metadata is bounded and restricted to completed assistants without complex JSON SQL", () => {
+  const check = getTableConfig(chatMessages).checks.find(
+    (value) => value.name === "chat_messages_sources_consistent",
+  )!;
+  const sql = dialect.sqlToQuery(check.value).sql;
+  assert.match(sql, /case\s+when .*"source_refs" is null then true/);
+  assert.match(sql, /jsonb_typeof\(.*"source_refs"\) = 'array' then/);
+  assert.match(sql, /"role" = 'assistant' and .*"status" = 'completed'/);
+  assert.match(sql, /jsonb_array_length\(.*"source_refs"\) between 1 and 5/);
+  assert.match(sql, /else false\s+end/);
+});
+
+test("generated sources migration adds only a nullable column and CHECK to the prior snapshot", () => {
+  const root = new URL("./migrations/", import.meta.url);
+  const directories = readdirSync(root).filter((name) => name.endsWith("_chat_source_refs"));
+  assert.equal(directories.length, 1);
+  const migration = readFileSync(new URL(`${directories[0]}/migration.sql`, root), "utf8");
+  assert.match(migration, /^ALTER TABLE "chat_messages" ADD COLUMN "source_refs" jsonb;/);
+  assert.equal((migration.match(/ALTER TABLE/g) ?? []).length, 2);
+  assert.equal((migration.match(/ADD CONSTRAINT/g) ?? []).length, 1);
+  assert.doesNotMatch(
+    migration,
+    /\b(DROP|UPDATE|INSERT|DELETE|TRUNCATE|GRANT|REVOKE|INDEX|DEFAULT|NOT NULL)\b/,
+  );
+  const snapshot = JSON.parse(
+    readFileSync(new URL(`${directories[0]}/snapshot.json`, root), "utf8"),
+  );
+  const previous = JSON.parse(
+    readFileSync(new URL("20261119144819_note_proposals/snapshot.json", root), "utf8"),
+  );
+  assert.deepEqual(snapshot.prevIds, [previous.id]);
+  assert.deepEqual(
+    snapshot.footprints.map((value: { statementType: string }) => value.statementType),
+    ["add_column", "add_check"],
+  );
+  assert.equal(snapshot.deltas.length, 2);
+  for (const delta of snapshot.deltas) {
+    assert.equal(delta.op, "create");
+    assert.equal(delta.row.table, "chat_messages");
+    assert.ok(["source_refs", "chat_messages_sources_consistent"].includes(delta.row.name));
+  }
 });
 
 test("chat relations compile in both directions while preserving existing auth/workspace relations", () => {

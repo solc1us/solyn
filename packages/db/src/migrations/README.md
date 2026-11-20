@@ -4,6 +4,21 @@
 
 The NOT APPLIED labels in the Phase 1C/2B reviews below record those earlier offline implementation stages, not the present remote state. Do not reapply old migrations on the basis of those historical labels. Production, permission changes and disposable database-write tests still require separate approval.
 
+## P4.4B — durable retrieved-note references (local artifacts only, NOT APPLIED)
+
+Generated with the installed Drizzle Kit **1.0.0-rc.5**, using the existing PostgreSQL schema/output paths without loading runtime credentials:
+
+```sh
+cd packages/db
+bunx --no-install drizzle-kit generate --dialect postgresql --schema ./src/schema/index.ts --out ./src/migrations --name chat_source_refs
+```
+
+Artifacts: `20261120105833_chat_source_refs/{migration.sql,snapshot.json}`. Reviewed SQL contains exactly two statements: add nullable JSONB `chat_messages.source_refs` (no default), and add `chat_messages_sources_consistent`. The CHECK uses CASE to allow SQL NULL, otherwise require an array of 1–5 entries on completed assistant messages. Strict field/UUID/timestamp/unique-note/scope validation remains in the application. JSONB does not add per-note FKs or authorization guarantees.
+
+The v9 diff snapshot points to the existing proposal snapshot and contains exactly two create deltas (column and CHECK), with corresponding add-column/add-check footprints. No old migration changed; no unrelated schema delta, table, index, drop, data rewrite/backfill, grant, policy or auth change is included. Application completion stores only ordered note/project IDs and retrieval edit timestamps, atomically with the answer; public links require current ownership checks.
+
+**No database connection, migration application or fixture write was performed.** Deployment must wait for PM approval of this exact SQL and the independently identified development target, migration-history/baseline compatibility, existing backend-only exposure protections and backup/recovery/DDL-lock timing. Apply the nullable-column migration before deploying code that selects it; old rows remain NULL without backfill. Actual PostgreSQL CHECK/transaction behavior and authenticated source navigation require separately approved verification; offline metadata/scripted SQL tests do not prove those properties.
+
 ## Phase 1C migration review — historical offline review
 
 Generated with Drizzle ORM / Kit **1.0.0-rc.5**, using the existing config and `bun run db:generate --name core_workspace`.

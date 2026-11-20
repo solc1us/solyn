@@ -1,0 +1,64 @@
+{
+  "type": "diff",
+  "version": "9",
+  "dialect": "postgres",
+  "id": "8d7a5c23-e5ef-441b-8234-211cb13842de",
+  "prevIds": ["18294657-03cc-4a2b-a514-06e72ccd731a"],
+  "footprints": [
+    {
+      "statementType": "add_column",
+      "statementTarget": ["column", "public", "chat_messages", "source_refs"],
+      "writes": [
+        "s|col|public.chat_messages.source_refs",
+        "n|col|public.chat_messages.source_refs",
+        "e|col|public.chat_messages.source_refs"
+      ],
+      "reads": ["n|tbl|public.chat_messages", "n|sch|public"]
+    },
+    {
+      "statementType": "add_check",
+      "statementTarget": ["table", "public", "chat_messages"],
+      "writes": [
+        "s|ck|public.chat_messages.chat_messages_sources_consistent",
+        "n|ck|public.chat_messages.chat_messages_sources_consistent",
+        "e|ck|public.chat_messages.chat_messages_sources_consistent",
+        "n|con|public.chat_messages.chat_messages_sources_consistent"
+      ],
+      "reads": [
+        "n|tbl|public.chat_messages",
+        "n|sch|public",
+        "n|col|public.chat_messages.source_refs",
+        "n|col|public.chat_messages.role",
+        "n|col|public.chat_messages.status"
+      ]
+    }
+  ],
+  "deltas": [
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "chat_messages",
+        "name": "source_refs",
+        "type": "jsonb",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "chat_messages",
+        "name": "chat_messages_sources_consistent",
+        "value": "case\n        when \"source_refs\" is null then true\n        when jsonb_typeof(\"source_refs\") = 'array' then\n          \"role\" = 'assistant' and \"status\" = 'completed'\n          and jsonb_array_length(\"source_refs\") between 1 and 5\n        else false\n      end",
+        "entityType": "checks"
+      }
+    }
+  ]
+}

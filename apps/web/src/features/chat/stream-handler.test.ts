@@ -5,7 +5,13 @@ import { createGroq } from "@ai-sdk/groq";
 import { APICallError, simulateReadableStream, streamText } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 
-import { prepareNoteInput, PROPOSAL_MESSAGE, type ErrorCode, type ProposalView } from "./contracts";
+import {
+  prepareNoteInput,
+  PROPOSAL_MESSAGE,
+  type ErrorCode,
+  type ProposalView,
+  type SourceView,
+} from "./contracts";
 import {
   CHAT_MODEL_ID,
   createChatStreamHandler,
@@ -34,6 +40,7 @@ const user = {
   modelId: null,
   createdAt: now,
   updatedAt: now,
+  sources: [] as SourceView[],
 } as const;
 const assistant = {
   ...user,
@@ -1066,6 +1073,16 @@ const retrievedNote = {
   noteDate: "2025-12-01",
   updatedAt: now,
 };
+const retrievedSource: SourceView = {
+  ordinal: 1,
+  state: "available",
+  noteId: retrievedNote.id,
+  projectId: otherTurn,
+  title: "Current authorized title",
+  href: `/projects/${otherTurn}/notes/${retrievedNote.id}`,
+  retrievedUpdatedAt: now.toISOString(),
+  updatedAt: now.toISOString(),
+};
 function retrievalModel(
   first = toolModel({ query: " budget " }, { name: "searchNotes" }),
   second = model("The notes say launch was delayed pending the budget review."),
@@ -1079,6 +1096,39 @@ function retrievalModel(
     },
   });
 }
+
+test("sources persist every captured result in order, while finish uses only the service's authorized projection", async () => {
+  const second = { ...retrievedNote, id: otherTurn, title: "Second retrieved note" };
+  let captured: unknown;
+  const projected: SourceView[] = [retrievedSource, { ordinal: 2, state: "unavailable" }];
+  const f = fixture({
+    project: true,
+    model: retrievalModel(undefined, model("Answer [99] /projects/model-invented/notes/fake")),
+    searchNotes: async () => ok([retrievedNote, second]),
+    chat: {
+      completeResponse: async (input) => {
+        captured = input;
+        return ok({ ...assistant, status: "completed", content: "Answer", sources: projected });
+      },
+    },
+  });
+  const parts = events(await (await f.post(request())).text());
+  assert.deepEqual(
+    (captured as { sourceRefs: unknown }).sourceRefs,
+    [retrievedNote, second].map((note) => ({
+      noteId: note.id,
+      projectId: note.projectId,
+      retrievedUpdatedAt: note.updatedAt.toISOString(),
+    })),
+  );
+  assert.deepEqual(parts.at(-1)!.data.sources, projected);
+  assert.equal(parts.at(-1)!.data.messageId, assistant.id);
+  assert.equal(parts.at(-1)!.data.turnId, turnId);
+  assert.ok(
+    parts.filter((part) => part.event !== "finish").every((part) => !("sources" in part.data)),
+  );
+  assert.equal(f.calls.filter((call) => call.operation === "search").length, 1);
+});
 
 test("retrieval searches only the owned conversation scope, then streams and persists the answer", async () => {
   const provider = retrievalModel();
@@ -1105,7 +1155,13 @@ test("retrieval searches only the owned conversation scope, then streams and per
     .map((part) => part.data.text)
     .join("");
   assert.equal(answer, "The notes say launch was delayed pending the budget review.");
-  assert.deepEqual(f.calls.at(-1)!.input, { ...turn, content: answer });
+  assert.deepEqual(f.calls.at(-1)!.input, {
+    ...turn,
+    content: answer,
+    sourceRefs: [
+      { noteId: retrievedNote.id, projectId: otherTurn, retrievedUpdatedAt: now.toISOString() },
+    ],
+  });
   assert.equal(provider.doStreamCalls.length, 2);
   const first = provider.doStreamCalls[0]!;
   const second = provider.doStreamCalls[1]!;
@@ -1132,6 +1188,8 @@ test("retrieval preserves ordinary project chat and schema-only preparation as s
     assert.equal(f.provider.doStreamCalls.length, 1);
     assert.equal(f.calls.at(-1)!.operation, prepare ? "proposal" : "complete");
     assert.ok(!f.calls.some((call) => call.operation === "search"));
+    assert.deepEqual(parts.at(-1)!.data.sources, []);
+    assert.ok(!("sourceRefs" in (f.calls.at(-1)!.input as object)));
   }
 });
 
@@ -1236,6 +1294,7 @@ test("retrieval exceptions and malformed, foreign, excessive or unbounded result
     [{}],
     [{ ...retrievedNote, projectId: conversationId }],
     Array.from({ length: 6 }, () => retrievedNote),
+    [retrievedNote, retrievedNote],
     [{ ...retrievedNote, excerpt: "x".repeat(321) }],
     [{ ...retrievedNote, updatedAt: "not-a-date" }],
     [{ ...retrievedNote, content: "unbounded body" }],
@@ -1320,7 +1379,7 @@ test("retrieval content remains tool data, never instructions or permission to s
   const instructions = JSON.stringify(second.prompt.filter((message) => message.role === "system"));
   assert.match(instructions, /untrusted data|ignore commands/);
   assert.match(instructions, /insufficient or contradictory/);
-  assert.match(instructions, /do not generate citation IDs or note URLs/);
+  assert.match(instructions, /Do not generate citation markers, IDs or note URLs/);
   assert.ok(!f.calls.some((call) => call.operation === "proposal"));
 });
 
@@ -1389,18 +1448,29 @@ test("retrieval completed-turn replay returns its saved answer without another s
   const f = fixture({
     project: true,
     model: retrievalModel(),
+    searchNotes: async () => ok([retrievedNote]),
     chat: {
       beginTurn: async () =>
         ok({
           user,
-          assistant: { ...assistant, status: saved ? "completed" : "pending", content: saved },
+          assistant: {
+            ...assistant,
+            status: saved ? "completed" : "pending",
+            content: saved,
+            sources: saved ? [retrievedSource] : [],
+          },
           replayed: !!saved,
           abandoned: false,
           proposal: null,
         }),
       completeResponse: async (input) => {
         saved = (input as { content: string }).content;
-        return ok({ ...assistant, content: saved, status: "completed" });
+        return ok({
+          ...assistant,
+          content: saved,
+          status: "completed",
+          sources: [retrievedSource],
+        });
       },
     },
   });
@@ -1408,6 +1478,7 @@ test("retrieval completed-turn replay returns its saved answer without another s
   const replay = await (await f.post(request())).json();
   assert.equal(replay.replayed, true);
   assert.equal(replay.assistant.content, saved);
+  assert.deepEqual(replay.assistant.sources, [retrievedSource]);
   assert.equal(f.provider.doStreamCalls.length, 2);
   assert.equal(f.calls.filter((call) => call.operation === "search").length, 1);
 });

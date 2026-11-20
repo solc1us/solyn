@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { proposalViewSchema, type ProposalView } from "./contracts";
+import { proposalViewSchema, sourcesSchema, type ProposalView, type SourceView } from "./contracts";
 
 export const issueMessages = {
   UNAUTHENTICATED: "Sign in to continue. Your draft is still here.",
@@ -47,8 +47,35 @@ const messageSchema = z.object({
   content: z.string().max(100_000),
   status: z.enum(["pending", "completed", "failed", "stopped"]),
   proposal: proposalViewSchema.nullable().optional(),
+  sources: sourcesSchema.default([]),
 });
-export type WireMessage = z.infer<typeof messageSchema>;
+// Older server responses and local pending messages may omit sources.
+export type WireMessage = Omit<z.infer<typeof messageSchema>, "sources"> & {
+  sources?: SourceView[];
+};
+export function sourcesMatchMessage(
+  message: Pick<WireMessage, "role" | "status" | "sources" | "proposal">,
+  projectId?: string | null,
+) {
+  return (
+    !message.sources?.length ||
+    (projectId !== null &&
+      message.role === "assistant" &&
+      message.status === "completed" &&
+      !message.proposal &&
+      message.sources.every(
+        (source) =>
+          source.state === "unavailable" ||
+          projectId === undefined ||
+          source.projectId === projectId,
+      ) &&
+      new Set(
+        message.sources
+          .filter((source) => source.state === "available")
+          .map((source) => source.projectId),
+      ).size <= 1)
+  );
+}
 export function proposalMatchesMessage(
   proposal: ProposalView | null | undefined,
   message: Pick<WireMessage, "id" | "conversationId" | "turnId" | "role" | "status">,
@@ -122,7 +149,7 @@ export async function* parseSSE(
 }
 
 type Outcome =
-  | { kind: "finish"; messageId: string; proposal: ProposalView | null }
+  | { kind: "finish"; messageId: string; proposal: ProposalView | null; sources: SourceView[] }
   | { kind: "replay"; user: WireMessage; assistant: WireMessage; abandoned: boolean }
   | { kind: "error"; code: Issue; confirmed: boolean; status?: "failed" | "stopped" }
   | { kind: "rejected"; code: Issue };
@@ -157,7 +184,10 @@ export async function consumeChatResponse(
       user.status !== "completed" ||
       user.content !== attempt.content ||
       assistant.role !== "assistant" ||
+      assistant.id === user.id ||
       user.proposal ||
+      !sourcesMatchMessage(user) ||
+      !sourcesMatchMessage({ ...assistant, proposal }) ||
       !proposalMatchesMessage(proposal, assistant) ||
       (assistant.proposal && assistant.proposal.id !== proposal?.id)
     )
@@ -193,6 +223,7 @@ export async function consumeChatResponse(
           persisted: z.literal(true),
           messageId: z.uuid(),
           proposal: proposalViewSchema.nullable().default(null),
+          sources: sourcesSchema.default([]),
         })
         .safeParse(body);
       if (!started || !length || !parsed.success) throw new TransportFailure("PROTOCOL");
@@ -205,7 +236,14 @@ export async function consumeChatResponse(
         })
       )
         throw new TransportFailure("PROTOCOL");
-      return { kind: "finish", messageId: parsed.data.messageId, proposal: parsed.data.proposal };
+      if (!sourcesMatchMessage({ ...parsed.data, role: "assistant" }))
+        throw new TransportFailure("PROTOCOL");
+      return {
+        kind: "finish",
+        messageId: parsed.data.messageId,
+        proposal: parsed.data.proposal,
+        sources: parsed.data.sources,
+      };
     } else {
       const parsed = z
         .object({

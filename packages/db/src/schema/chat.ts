@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   check,
   index,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -50,6 +51,7 @@ export const chatMessages = pgTable(
     content: text("content").notNull(),
     status: text("status", { enum: ["pending", "completed", "failed", "stopped"] }).notNull(),
     modelId: text("model_id"),
+    sourceRefs: jsonb("source_refs"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .defaultNow()
@@ -66,6 +68,16 @@ export const chatMessages = pgTable(
     check(
       "chat_messages_user_consistent",
       sql`${table.role} <> 'user' or (${table.status} = 'completed' and ${table.modelId} is null)`,
+    ),
+    check(
+      "chat_messages_sources_consistent",
+      sql`case
+        when ${table.sourceRefs} is null then true
+        when jsonb_typeof(${table.sourceRefs}) = 'array' then
+          ${table.role} = 'assistant' and ${table.status} = 'completed'
+          and jsonb_array_length(${table.sourceRefs}) between 1 and 5
+        else false
+      end`,
     ),
     // Defense in depth alongside the service's conversation-row lock protocol.
     uniqueIndex("chat_messages_one_pending_idx")

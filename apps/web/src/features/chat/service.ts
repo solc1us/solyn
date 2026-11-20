@@ -47,7 +47,13 @@ const messageFields = {
   modelId: messages.modelId,
   createdAt: messages.createdAt,
   updatedAt: messages.updatedAt,
+  sourceRefs: messages.sourceRefs,
 };
+// Never spread private persisted references into an API/Server Action result.
+const publicMessage = (
+  { sourceRefs: _sourceRefs, ...message }: Message,
+  sources: contracts.SourceView[] = [],
+) => ({ ...message, sources });
 const abandoned = (message: Message, now: Date) =>
   message.status === "pending" && now.getTime() - message.createdAt.getTime() >= PENDING_TIMEOUT_MS;
 
@@ -192,6 +198,71 @@ export function createChatService({
     );
   }
 
+  async function readSources(
+    tx: Transaction,
+    ownerId: string,
+    projectId: string | null,
+    rows: Message[],
+  ) {
+    const refs = new Map<string, contracts.SourceRef[]>();
+    for (const row of rows) {
+      const parsed = contracts.sourceRefsSchema.nullable().parse(row.sourceRefs ?? null);
+      if (!parsed) continue;
+      if (
+        row.role !== "assistant" ||
+        row.status !== "completed" ||
+        !projectId ||
+        parsed.some((ref) => ref.projectId !== projectId)
+      )
+        throw new Error("Invalid stored source scope");
+      refs.set(row.id, parsed);
+    }
+    const ids = [...new Set([...refs.values()].flat().map((ref) => ref.noteId))];
+    const found = ids.length
+      ? await tx
+          .select({
+            id: notes.id,
+            projectId: notes.projectId,
+            title: notes.title,
+            updatedAt: notes.updatedAt,
+          })
+          .from(notes)
+          .innerJoin(projects, eq(projects.id, notes.projectId))
+          .where(
+            and(
+              inArray(notes.id, ids),
+              eq(notes.projectId, projectId!),
+              eq(projects.ownerId, ownerId),
+            ),
+          )
+      : [];
+    const available = new Map(
+      found.filter((note) => note.projectId === projectId).map((note) => [note.id, note]),
+    );
+    return new Map(
+      [...refs].map(([messageId, sources]) => [
+        messageId,
+        contracts.sourcesSchema.parse(
+          sources.map((ref, index) => {
+            const note = available.get(ref.noteId);
+            return note
+              ? {
+                  ordinal: index + 1,
+                  state: "available",
+                  noteId: note.id,
+                  projectId: note.projectId,
+                  title: note.title,
+                  href: `/projects/${note.projectId}/notes/${note.id}`,
+                  retrievedUpdatedAt: ref.retrievedUpdatedAt,
+                  updatedAt: note.updatedAt.toISOString(),
+                }
+              : { ordinal: index + 1, state: "unavailable" };
+          }),
+        ),
+      ]),
+    );
+  }
+
   async function databaseNow(tx: Transaction) {
     const result = await tx.execute<{ now: Date }>(sql`select clock_timestamp() as now`);
     const now = new Date(result.rows[0]!.now);
@@ -222,10 +293,11 @@ export function createChatService({
     status: "completed" | "failed" | "stopped",
     content: string,
     now: Date,
+    sourceRefs: contracts.SourceRef[] | null = null,
   ) {
     const [row] = await tx
       .update(messages)
-      .set({ status, content, updatedAt: now })
+      .set({ status, content, sourceRefs, updatedAt: now })
       .where(
         and(
           ownedMessages(ownerId, message.conversationId),
@@ -260,16 +332,39 @@ export function createChatService({
             );
           if (!response) throw missing();
           const content = value.content ?? response.content;
+          const sourceRefs = "sourceRefs" in value ? value.sourceRefs : null;
           if (response.status !== "pending") {
-            if (response.status !== status || response.content !== content) throw conflict();
-            return response; // Exact terminal replay, no timestamps/history rewritten.
+            const stored = contracts.sourceRefsSchema.nullable().parse(response.sourceRefs ?? null);
+            if (
+              response.status !== status ||
+              response.content !== content ||
+              JSON.stringify(stored) !== JSON.stringify(sourceRefs)
+            )
+              throw conflict();
+            const sources = await readSources(tx, ownerId, conversation.projectId, [response]);
+            return publicMessage(response, sources.get(response.id)); // No history/timestamp rewrite.
           }
           const now = await databaseNow(tx);
           if (status === "completed" && abandoned(response, now)) throw conflict();
+          if (sourceRefs?.some((ref) => ref.projectId !== conversation.projectId))
+            throw new ChatError("INVALID_INPUT", "Invalid response source scope.");
+          const sources = await readSources(tx, ownerId, conversation.projectId, [
+            { ...response, status, sourceRefs },
+          ]);
+          const projected = sources.get(response.id) ?? [];
+          if (projected.some((source) => source.state === "unavailable")) throw missing();
           const updatedAt = activityTime(now, conversation.updatedAt);
-          const result = await setTerminal(tx, ownerId, response, status, content, updatedAt);
+          const result = await setTerminal(
+            tx,
+            ownerId,
+            response,
+            status,
+            content,
+            updatedAt,
+            sourceRefs,
+          );
           await touch(tx, ownerId, conversation.id, updatedAt);
-          return result;
+          return publicMessage(result, projected);
         },
         { isolationLevel: "read committed" },
       ),
@@ -354,10 +449,11 @@ export function createChatService({
             const proposals = sourceIds.length
               ? await readProposals(tx, ownerId, inArray(noteProposals.sourceMessageId, sourceIds))
               : new Map<string, contracts.ProposalView>();
+            const sources = await readSources(tx, ownerId, conversation.projectId, page);
             return {
               conversation,
               messages: (value.latest ? page.reverse() : page).map((m) => ({
-                ...m,
+                ...publicMessage(m, sources.get(m.id)),
                 proposal: proposals.get(m.id) ?? null,
               })),
               pendingTurn: pending
@@ -444,9 +540,13 @@ export function createChatService({
               if (user.content !== value.content || assistant.modelId !== value.modelId)
                 throw conflict();
               const proposal = await proposalFor(tx, ownerId, assistant);
-              return {
+              const sources = await readSources(tx, ownerId, conversation.projectId, [
                 user,
                 assistant,
+              ]);
+              return {
+                user: publicMessage(user),
+                assistant: publicMessage(assistant, sources.get(assistant.id)),
                 replayed: true,
                 abandoned: abandoned(assistant, now),
                 proposal,
@@ -491,7 +591,13 @@ export function createChatService({
             const assistant = rows.find((row) => row.role === "assistant");
             if (rows.length !== 2 || !user || !assistant) throw new Error("Missing turn insert");
             await touch(tx, ownerId, conversation.id, createdAt);
-            return { user, assistant, replayed: false, abandoned: false, proposal: null };
+            return {
+              user: publicMessage(user),
+              assistant: publicMessage(assistant),
+              replayed: false,
+              abandoned: false,
+              proposal: null,
+            };
           },
           { isolationLevel: "read committed" },
         ),
@@ -522,7 +628,7 @@ export function createChatService({
                 JSON.stringify(proposal.draft) !== JSON.stringify(value.draft)
               )
                 throw conflict();
-              return { ...response, proposal };
+              return { ...publicMessage(response), proposal };
             }
             let projectName: string | null = null;
             if (conversation.projectId) {
@@ -582,7 +688,7 @@ export function createChatService({
                 : null,
               receipt: null,
             });
-            return { ...completed, proposal };
+            return { ...publicMessage(completed), proposal };
           },
           { isolationLevel: "read committed" },
         ),
@@ -613,7 +719,10 @@ export function createChatService({
                 ),
               );
             if (!response) throw missing();
-            if (response.status !== "pending") return response;
+            if (response.status !== "pending") {
+              const sources = await readSources(tx, ownerId, conversation.projectId, [response]);
+              return publicMessage(response, sources.get(response.id));
+            }
             const now = await databaseNow(tx);
             if (!abandoned(response, now)) throw conflict();
             const updatedAt = activityTime(now, conversation.updatedAt);
@@ -626,7 +735,7 @@ export function createChatService({
               updatedAt,
             );
             await touch(tx, ownerId, conversation.id, updatedAt);
-            return result;
+            return publicMessage(result);
           },
           { isolationLevel: "read committed" },
         ),

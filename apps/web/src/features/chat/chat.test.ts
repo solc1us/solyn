@@ -188,6 +188,286 @@ const operations = (service: ReturnType<typeof createChatService>) => [
   () => service.getGenerationContext(turnInput),
 ];
 
+const sourceNoteId = "77777777-7777-4777-8777-777777777777";
+const sourceRefs: contracts.SourceRef[] = [
+  { noteId: sourceNoteId, projectId, retrievedUpdatedAt: now.toISOString() },
+];
+const sourceLock: Step = { ...lock, rows: [[conversationId, projectId, "Project chat", now, now]] };
+const referencedRow = (refs: unknown = sourceRefs, status = "completed") => [
+  ...messageRow("assistant", status, "Answer"),
+  refs,
+];
+const sourceRead = (
+  rows: unknown[][] = [[sourceNoteId, projectId, "Current authorized title", now]],
+): Step => ({
+  sql: /from "notes" inner join "projects"/,
+  rows,
+  inspect: (sql, params) => {
+    assert.match(sql, /"notes"\."id" in \(/);
+    assert.match(sql, /"notes"\."project_id" = \$/);
+    assert.match(sql, /"projects"\."owner_id" = \$/);
+    assert.ok(
+      params.includes("user-a") && params.includes(projectId) && params.includes(sourceNoteId),
+    );
+    assert.doesNotMatch(sql, /"content"|"excerpt"/);
+  },
+});
+
+test("sources complete atomically with content/status/activity and expose only an authorized public projection", async () => {
+  const f = fixture([
+    begin,
+    sourceLock,
+    replay([messageRow()]),
+    clock(),
+    sourceRead(),
+    {
+      ...terminal("completed", "Answer"),
+      rows: [referencedRow()],
+      inspect: (sql, params) => {
+        messageScoped(sql, params);
+        assert.match(sql, /"content" = \$.*"status" = \$.*"source_refs" = \$/);
+        assert.ok(params.includes(JSON.stringify(sourceRefs)));
+        assert.ok(params.includes("Answer") && params.includes("completed"));
+      },
+    },
+    touch,
+    commit,
+  ]);
+  const result = data(
+    await f.service.completeResponse({ ...turnInput, content: "Answer", sourceRefs }),
+  );
+  assert.equal(result.sources.length, 1);
+  assert.equal(result.sources[0]!.state, "available");
+  assert.deepEqual(result.sources[0], {
+    ...sourceRefs[0],
+    ordinal: 1,
+    state: "available",
+    title: "Current authorized title",
+    href: `/projects/${projectId}/notes/${sourceNoteId}`,
+    updatedAt: now.toISOString(),
+  });
+  assert.ok(!("sourceRefs" in result));
+  exhausted(f);
+});
+
+test("sources exact canonical completion replay never rewrites metadata or timestamps", async () => {
+  const refs = [{ retrievedUpdatedAt: "2026-01-01T00:00:00Z", projectId, noteId: sourceNoteId }];
+  const f = fixture([begin, sourceLock, replay([referencedRow(refs)]), sourceRead([]), commit]);
+  const result = data(
+    await f.service.completeResponse({ ...turnInput, content: "Answer", sourceRefs }),
+  );
+  assert.deepEqual(result.sources, [{ ordinal: 1, state: "unavailable" }]);
+  assert.equal(result.updatedAt.getTime(), now.getTime());
+  assert.ok(!f.calls.some((sql) => sql.startsWith("update")));
+  exhausted(f);
+  for (const changed of [
+    null,
+    [{ ...sourceRefs[0], retrievedUpdatedAt: "2026-01-02T00:00:00Z" }],
+  ]) {
+    const mismatch = fixture([begin, sourceLock, replay([referencedRow()]), rollback]);
+    failure(
+      await mismatch.service.completeResponse({
+        ...turnInput,
+        content: "Answer",
+        sourceRefs: changed,
+      }),
+      "CONFLICT",
+    );
+    exhausted(mismatch);
+  }
+});
+
+test("sources completion failures request rollback and never acknowledge saved references", async () => {
+  for (const stage of ["update", "activity", "commit"]) {
+    const error = new Error("synthetic private SQL or source payload");
+    const update = { ...terminal("completed", "Answer"), rows: [referencedRow()] };
+    const steps = [
+      begin,
+      sourceLock,
+      replay([messageRow()]),
+      clock(),
+      sourceRead(),
+      stage === "update" ? { ...update, error } : update,
+      ...(stage === "update" ? [] : [stage === "activity" ? { ...touch, error } : touch]),
+      ...(stage === "commit" ? [{ ...commit, error }] : []),
+      rollback,
+    ];
+    const f = fixture(steps);
+    const result = await f.service.completeResponse({
+      ...turnInput,
+      content: "Answer",
+      sourceRefs,
+    });
+    failure(result, "UNAVAILABLE");
+    assert.doesNotMatch(JSON.stringify(result), /synthetic|sourceRefs|sources|77777777/);
+    exhausted(f);
+  }
+});
+
+test("sources contracts reject malformed, duplicate, excessive or client/model-provided metadata", async () => {
+  for (const refs of [
+    [],
+    {},
+    [{ ...sourceRefs[0], href: "/invented" }],
+    [{ ...sourceRefs[0], noteId: "invalid" }],
+    [{ ...sourceRefs[0], retrievedUpdatedAt: "2026-02-30T00:00:00Z" }],
+    [...sourceRefs, ...sourceRefs],
+    Array.from({ length: 6 }, () => ({ ...sourceRefs[0], noteId: crypto.randomUUID() })),
+  ]) {
+    const f = fixture();
+    failure(
+      await f.service.completeResponse({ ...turnInput, content: "Answer", sourceRefs: refs }),
+      "INVALID_INPUT",
+    );
+    assert.equal(f.calls.length, 0);
+  }
+  assert.equal(
+    contracts.streamTurnInput.safeParse({ ...turnInput, content, sourceRefs }).success,
+    false,
+  );
+  assert.equal(
+    contracts.completeProposalInput.safeParse({
+      ...turnInput,
+      content,
+      draft: { projectHint: null, title: "Draft", content: "Original", noteDate: null },
+      sourceRefs,
+    }).success,
+    false,
+  );
+  const unauthenticated = fixture([], null);
+  failure(
+    await unauthenticated.service.completeResponse({ ...turnInput, content: "Answer", sourceRefs }),
+    "UNAUTHENTICATED",
+  );
+  assert.equal(unauthenticated.calls.length, 0);
+});
+
+test("sources new completion rejects different project scope and unavailable notes before updating", async () => {
+  for (const project of [null, nextTurnId]) {
+    const f = fixture([
+      begin,
+      { ...lock, rows: [[conversationId, project, "Chat", now, now]] },
+      replay([messageRow()]),
+      clock(),
+      rollback,
+    ]);
+    failure(
+      await f.service.completeResponse({ ...turnInput, content: "Answer", sourceRefs }),
+      "INVALID_INPUT",
+    );
+    exhausted(f);
+  }
+  const unavailable = fixture([
+    begin,
+    sourceLock,
+    replay([messageRow()]),
+    clock(),
+    sourceRead([]),
+    rollback,
+  ]);
+  failure(
+    await unavailable.service.completeResponse({ ...turnInput, content: "Answer", sourceRefs }),
+    "NOT_FOUND",
+  );
+  exhausted(unavailable);
+});
+
+test("sources completed begin replay reauthorizes references without writes or repeated retrieval", async () => {
+  const f = fixture([
+    begin,
+    sourceLock,
+    replay([messageRow("user", "completed", content), referencedRow()]),
+    clock(),
+    { sql: /from "note_proposals"/ },
+    sourceRead([]),
+    commit,
+  ]);
+  const result = data(await f.service.beginTurn(beginInput));
+  assert.equal(result.replayed, true);
+  assert.deepEqual(result.assistant.sources, [{ ordinal: 1, state: "unavailable" }]);
+  assert.deepEqual(result.user.sources, []);
+  assert.ok(!("sourceRefs" in result.assistant));
+  assert.ok(!f.calls.some((sql) => /^(insert|update)/.test(sql)));
+  exhausted(f);
+});
+
+test("sources history batches authorization, retains ordinal gaps and binds metadata to exact paginated messages", async () => {
+  const secondRef = { ...sourceRefs[0]!, noteId: nextTurnId };
+  const row = referencedRow([...sourceRefs, secondRef]);
+  const other = messageRow("assistant", "completed", "Unrelated answer", nextTurnId);
+  other[0] = nextTurnId;
+  const f = fixture([
+    { sql: /^begin isolation level repeatable read read only$/ },
+    { sql: /from "chat_conversations"/, rows: sourceLock.rows, inspect: scoped },
+    {
+      sql: /from "chat_messages".*order by/,
+      rows: [row, other],
+      inspect: (_sql, params) => assert.deepEqual(params.slice(-2), [10, 50]),
+    },
+    pending(),
+    clock(),
+    { sql: /from "note_proposals"/ },
+    sourceRead([[nextTurnId, projectId, "Second note, now renamed", now]]),
+    commit,
+  ]);
+  const view = data(
+    await f.service.getConversation({ conversationId, latest: true, limit: 10, offset: 50 }),
+  );
+  assert.deepEqual(view.messages.find((message) => message.id === nextTurnId)!.sources, []);
+  const sources = view.messages.find((message) => message.id === row[0])!.sources;
+  assert.deepEqual(sources[0], { ordinal: 1, state: "unavailable" });
+  assert.deepEqual(sources[1], {
+    ...secondRef,
+    ordinal: 2,
+    state: "available",
+    title: "Second note, now renamed",
+    href: `/projects/${projectId}/notes/${nextTurnId}`,
+    updatedAt: now.toISOString(),
+  });
+  assert.ok(view.messages.every((message) => !("sourceRefs" in message)));
+  assert.equal(f.calls.filter((sql) => sql.includes('from "notes"')).length, 1);
+  exhausted(f);
+});
+
+test("sources corrupt stored JSON fails safely without partial trusted links", async () => {
+  for (const refs of [
+    {},
+    [],
+    [...sourceRefs, { ...sourceRefs[0], href: "private-corrupt-url" }],
+    [{ ...sourceRefs[0], projectId: nextTurnId }],
+  ]) {
+    const f = fixture([begin, sourceLock, replay([referencedRow(refs)]), rollback]);
+    const result = await f.service.completeResponse({
+      ...turnInput,
+      content: "Answer",
+      sourceRefs,
+    });
+    // Well-formed but changed scope conflicts; malformed records are unavailable.
+    failure(result, Array.isArray(refs) && refs.length === 1 ? "CONFLICT" : "UNAVAILABLE");
+    assert.doesNotMatch(JSON.stringify(result), /private-corrupt|77777777|sourceRefs/);
+    exhausted(f);
+  }
+  const history = fixture([
+    begin,
+    { sql: /from "chat_conversations"/, rows: sourceLock.rows },
+    { sql: /from "chat_messages".*order by/, rows: [referencedRow({ invalid: "private" })] },
+    pending(),
+    clock(),
+    { sql: /from "note_proposals"/ },
+    rollback,
+  ]);
+  failure(await history.service.getConversation({ conversationId }), "UNAVAILABLE");
+  exhausted(history);
+});
+
+test("sources legacy NULL completion/replay remains source-free", async () => {
+  const f = fixture([begin, lock, replay([referencedRow(null)]), commit]);
+  const result = data(await f.service.completeResponse({ ...turnInput, content: "Answer" }));
+  assert.deepEqual(result.sources, []);
+  assert.ok(!("sourceRefs" in result));
+  exhausted(f);
+});
+
 test("every chat operation requires a fresh server session before SQL", async () => {
   const f = fixture([], null);
   for (const call of operations(f.service)) failure(await call(), "UNAUTHENTICATED");
