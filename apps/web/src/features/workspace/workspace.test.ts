@@ -22,7 +22,7 @@ type Step = {
 
 // A scripted, non-network driver under the REAL Drizzle query builder. This
 // verifies SQL scope and control flow, not PostgreSQL locking or persistence.
-function fixture(steps: Step[] = [], userId: string | null = "user-a") {
+function fixture(steps: Step[] = [], userId: string | null | (() => string | null) = "user-a") {
   const db = createDb({ DATABASE_URL: "postgresql://unused:unused@127.0.0.1:1/unused" });
   const remaining = [...steps];
   const calls: string[] = [];
@@ -43,7 +43,8 @@ function fixture(steps: Step[] = [], userId: string | null = "user-a") {
     db,
     getSession: async () => {
       sessionCalls++;
-      return userId ? { user: { id: userId } } : null;
+      const id = typeof userId === "function" ? userId() : userId;
+      return id === null ? null : { user: { id } };
     },
   });
   return { service, calls, remaining, sessionCalls: () => sessionCalls };
@@ -83,6 +84,7 @@ const validCalls = (service: ReturnType<typeof createWorkspaceService>) => [
   () => service.createProject({ name: "Project" }),
   () => service.updateProject({ projectId, name: "Changed" }),
   () => service.listNotes({ projectId }),
+  () => service.searchNotes({ projectId, query: "budget" }),
   () => service.getNote({ projectId, noteId }),
   () => service.createNote({ projectId, title: "Title", content }),
   () => service.updateNote({ projectId, noteId, expectedVersion: 1, content: "Changed" }),
@@ -92,7 +94,7 @@ test("every domain operation denies unauthenticated callers before any SQL", asy
   const f = fixture([], null);
   for (const call of validCalls(f.service)) failure(await call(), "UNAUTHENTICATED");
   assert.equal(f.calls.length, 0);
-  assert.equal(f.sessionCalls(), 8);
+  assert.equal(f.sessionCalls(), 9);
 });
 
 test("strict contracts reject UUIDs, blank/oversize fields, unknown update fields and impossible dates", () => {
@@ -492,4 +494,229 @@ test("session and database failures return safe errors", async () => {
     ok: false,
     error: { code: "UNAVAILABLE", message: "Workspace is unavailable. Please try again." },
   });
+});
+
+test("note search validates strict inputs, query bounds and pagination before SQL", async () => {
+  assert.deepEqual(contracts.searchNotesInput.parse({ projectId, query: " Budget \n" }), {
+    projectId,
+    query: "Budget",
+    limit: 20,
+    offset: 0,
+  });
+  assert.equal(
+    contracts.searchNotesInput.safeParse({
+      projectId,
+      query: "x".repeat(200),
+      limit: 50,
+      offset: 100_000,
+    }).success,
+    true,
+  );
+  assert.equal(contracts.searchNotesInput.safeParse({ projectId, query: "📚" }).success, true);
+  const f = fixture();
+  const invalid = [
+    undefined,
+    null,
+    {},
+    { query: "budget" },
+    { projectId: "invalid", query: "budget" },
+    ...[undefined, null, 1, "", " \n\t", "x".repeat(201), "a\0b", "\uD800", "\uDC00"].map(
+      (query) => ({ projectId, query }),
+    ),
+    ...[0, -1, 51, 1.5, "20", null, Infinity, NaN].map((limit) => ({
+      projectId,
+      query: "budget",
+      limit,
+    })),
+    ...[-1, 100_001, 1.5, "0", null, Infinity, NaN].map((offset) => ({
+      projectId,
+      query: "budget",
+      offset,
+    })),
+    { projectId, query: "budget", ownerId: "user-b" },
+    { projectId, query: "budget", userId: "user-b" },
+  ];
+  for (const input of invalid) failure(await f.service.searchNotes(input), "INVALID_INPUT");
+  assert.equal(f.calls.length, 0);
+});
+
+const searchProject: Step = {
+  sql: /^select .*from "projects"/,
+  rows: [[projectId]],
+  inspect: scoped,
+};
+function searchScoped(sql: string, params: unknown[]) {
+  scoped(sql, params);
+  assert.match(sql, /"notes"\."project_id" = \$/);
+  assert.match(sql, /exists \(select .*"projects"\."id" = "notes"\."project_id"/);
+  assert.match(
+    sql,
+    /"notes"\."title" ilike \$\d+ escape '!'\) or \("notes"\."content" ilike \$\d+ escape '!'/,
+  );
+  assert.match(
+    sql,
+    /order by "notes"\."title" ilike \$\d+ escape '!' desc, "notes"\."updated_at" desc, "notes"\."id" desc limit \$/,
+  );
+}
+
+test("note search matches title or content case-insensitively and selects only bounded metadata", async () => {
+  const f = fixture([
+    searchProject,
+    {
+      sql: /^select .*from "notes"/,
+      rows: [
+        [noteId, projectId, "BUDGET decision", "Opening text", null, now],
+        [
+          otherProjectId,
+          projectId,
+          "Meeting",
+          "Context before BuDgEt and after",
+          "2025-12-01",
+          now,
+        ],
+      ],
+      inspect: (sql, params) => {
+        searchScoped(sql, params);
+        assert.ok(params.includes("%BuDgEt%"));
+        assert.ok(params.includes("BuDgEt"));
+        assert.ok(!sql.includes("BuDgEt"));
+        assert.equal(params.at(-1), 20);
+        const projection = sql.split(' from "notes"')[0]!;
+        assert.match(
+          projection,
+          /substring\("content" from greatest\(1, strpos\(lower\("content"\), lower\(\$\d+\)\) - 80\) for 320\) as "excerpt"/,
+        );
+        assert.doesNotMatch(projection, /"owner_id"|"created_at"|select \*/);
+      },
+    },
+  ]);
+  const result = await f.service.searchNotes({ projectId, query: " BuDgEt " });
+  assert.deepEqual(result, {
+    ok: true,
+    data: [
+      {
+        id: noteId,
+        projectId,
+        title: "BUDGET decision",
+        excerpt: "Opening text",
+        noteDate: null,
+        updatedAt: now,
+      },
+      {
+        id: otherProjectId,
+        projectId,
+        title: "Meeting",
+        excerpt: "Context before BuDgEt and after",
+        noteDate: "2025-12-01",
+        updatedAt: now,
+      },
+    ],
+  });
+  assert.equal(f.remaining.length, 0);
+});
+
+for (const [query, pattern] of [
+  ["%", "%!%%"],
+  ["_", "%!_%"],
+  ["!", "%!!%"],
+  ["\\", "%\\%"],
+  ["50%_!\\path", "%50!%!_!!\\path%"],
+  ["' OR 1=1 --", "%' OR 1=1 --%"],
+]) {
+  test(`note search treats ${JSON.stringify(query)} as literal parameterized text`, async () => {
+    const f = fixture([
+      searchProject,
+      {
+        sql: /^select .*from "notes"/,
+        inspect: (sql, params) => {
+          searchScoped(sql, params);
+          assert.equal(params.filter((param) => param === pattern).length, 3);
+          assert.ok(params.includes(query)); // Raw literal text for excerpt positioning.
+          assert.ok(!sql.includes("OR 1=1"));
+        },
+      },
+    ]);
+    assert.deepEqual(await f.service.searchNotes({ projectId, query }), { ok: true, data: [] });
+    assert.equal(f.remaining.length, 0);
+  });
+}
+
+test("note search requests title-first, recent, ID-stable ordering with bounded offset pagination", async () => {
+  const f = fixture([
+    searchProject,
+    {
+      sql: /^select .*from "notes"/,
+      rows: [[noteId, projectId, "Budget", "Excerpt", null, now]],
+      inspect: (sql, params) => {
+        searchScoped(sql, params);
+        assert.match(sql, /limit \$\d+ offset \$\d+$/);
+        assert.deepEqual(params.slice(-2), [2, 3]);
+      },
+    },
+  ]);
+  const result = await f.service.searchNotes({ projectId, query: "budget", limit: 2, offset: 3 });
+  assert.equal(result.ok, true);
+  if (result.ok)
+    assert.deepEqual(
+      result.data.map((note) => note.id),
+      [noteId],
+    );
+  assert.equal(f.remaining.length, 0);
+});
+
+test("note search returns no matches and rejects expired or invalid sessions before SQL", async () => {
+  let user: string | null = "user-a";
+  const f = fixture(
+    [searchProject, { sql: /^select .*from "notes"/, inspect: searchScoped }],
+    () => user,
+  );
+  assert.deepEqual(await f.service.searchNotes({ projectId, query: "budget" }), {
+    ok: true,
+    data: [],
+  });
+  for (user of [null, ""])
+    failure(await f.service.searchNotes({ projectId, query: "budget" }), "UNAUTHENTICATED");
+  assert.equal(f.calls.length, 2);
+  assert.equal(f.sessionCalls(), 3);
+});
+
+test("note search rejects foreign and nonexistent projects identically without reading notes", async () => {
+  for (const id of [projectId, otherProjectId]) {
+    const f = fixture(
+      [
+        {
+          sql: /^select .*from "projects"/,
+          inspect: (sql, params) => {
+            assert.match(sql, /"projects"\."id" = \$\d+\) and \("projects"\."owner_id" = \$/);
+            assert.deepEqual(params, [id, "user-b"]);
+          },
+        },
+      ],
+      "user-b",
+    );
+    assert.deepEqual(await f.service.searchNotes({ projectId: id, query: "budget" }), {
+      ok: false,
+      error: { code: "NOT_FOUND", message: "Resource not found." },
+    });
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.remaining.length, 0);
+  }
+});
+
+test("note search safely handles session, project lookup and search database errors", async () => {
+  const privateError = new Error("synthetic private driver detail");
+  const cases = [
+    fixture([], () => {
+      throw privateError;
+    }),
+    fixture([{ sql: /^select .*from "projects"/, error: privateError }]),
+    fixture([searchProject, { sql: /^select .*from "notes"/, error: privateError }]),
+  ];
+  for (const f of cases) {
+    assert.deepEqual(await f.service.searchNotes({ projectId, query: "budget" }), {
+      ok: false,
+      error: { code: "UNAVAILABLE", message: "Workspace is unavailable. Please try again." },
+    });
+    assert.equal(f.remaining.length, 0);
+  }
 });

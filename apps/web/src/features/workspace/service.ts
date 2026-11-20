@@ -306,6 +306,38 @@ export function createWorkspaceService(dependencies: {
           .offset(value.offset);
       });
     },
+    searchNotes(input: unknown) {
+      return run(contracts.searchNotesInput, input, async (value, ownerId) => {
+        const [project] = await db
+          .select({ id: projects.id })
+          .from(projects)
+          .where(ownedProject(value.projectId, ownerId));
+        if (!project) throw missing();
+        // Explicit LIKE escape: %, _ and ! are literal; backslashes stay literal.
+        const pattern = `%${value.query.replace(/[!%_]/g, "!$&")}%`;
+        const titleMatch = sql<boolean>`${notes.title} ilike ${pattern} escape '!'`;
+        const contentMatch = sql<boolean>`${notes.content} ilike ${pattern} escape '!'`;
+        return db
+          .select({
+            id: notes.id,
+            projectId: notes.projectId,
+            title: notes.title,
+            // At most 320 PostgreSQL characters, with up to 80 before the first
+            // content match. Title-only matches use the beginning of the body.
+            excerpt:
+              sql<string>`substring(${notes.content} from greatest(1, strpos(lower(${notes.content}), lower(${value.query})) - 80) for 320)`.as(
+                "excerpt",
+              ),
+            noteDate: notes.noteDate,
+            updatedAt: notes.updatedAt,
+          })
+          .from(notes)
+          .where(and(ownedNote(value.projectId, ownerId), or(titleMatch, contentMatch)))
+          .orderBy(desc(titleMatch), desc(notes.updatedAt), desc(notes.id))
+          .limit(value.limit)
+          .offset(value.offset);
+      });
+    },
     getNote(input: unknown) {
       return run(contracts.noteInput, input, async (value, ownerId) => {
         const [note] = await db

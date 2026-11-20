@@ -45,6 +45,19 @@ export const updateProjectInput = z
     "Provide a project change",
   );
 export const listNotesInput = z.strictObject({ projectId: uuid, ...pagination });
+export const searchNotesInput = z.strictObject({
+  projectId: uuid,
+  query: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    // PostgreSQL text cannot represent NUL or unpaired Unicode surrogates.
+    .refine((value) => !value.includes("\0") && !/[\uD800-\uDFFF]/u.test(value)),
+  limit: pagination.limit.unwrap().max(50).default(20),
+  offset: pagination.offset,
+});
+export type SearchNotesInput = z.input<typeof searchNotesInput>;
 export const noteInput = z.strictObject({ projectId: uuid, noteId: uuid });
 export const createNoteInput = z.strictObject({
   projectId: uuid,
