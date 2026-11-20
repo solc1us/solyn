@@ -1,4 +1,10 @@
-# Phase 1C migration review — NOT APPLIED
+# Migration reviews and current development status
+
+**Current P3.2 status:** PM approved the proposal migration and continuing implementation, confirmed backend access, and reconfirmed **Data API disabled**. A bounded read-only check against the independently guarded development target found `public.note_proposals` and verified effective backend SELECT/INSERT privileges over an encrypted, authorized client connection. This is access evidence, not an executed insert or full constraint/migration-history audit. No migration was applied/reapplied by the agent in P3.2; Data API confirmation is not an outstanding blocker.
+
+The NOT APPLIED labels in the Phase 1C/2B reviews below record those earlier offline implementation stages, not the present remote state. Do not reapply old migrations on the basis of those historical labels. Production, permission changes and disposable database-write tests still require separate approval.
+
+## Phase 1C migration review — historical offline review
 
 Generated with Drizzle ORM / Kit **1.0.0-rc.5**, using the existing config and `bun run db:generate --name core_workspace`.
 
@@ -42,7 +48,7 @@ References inspected: [Securing your Data API](https://supabase.com/docs/guides/
 
 No database connection, schema execution, migration application, or provisioning is part of this phase. Offline metadata/query-compilation tests do not prove PostgreSQL constraint enforcement. Integration checks against an approved disposable development target remain required before accepting migration execution.
 
-## Phase 2B chat migration review — NOT APPLIED
+## Phase 2B chat migration review — historical offline review
 
 Generated with the unchanged Drizzle ORM / Kit **1.0.0-rc.5** workflow:
 
@@ -75,3 +81,9 @@ References reviewed: [Supabase changelog](https://supabase.com/changelog.md) and
 ### Remaining execution gate
 
 PM must approve the exact non-production target, Phase 1 baseline compatibility, exposure/grant/RLS plan, this SQL, and the ten-minute pending-turn recovery policy before rollout. Review backup/recovery and a disposable-development integration plan covering FK/CHECK/unique enforcement, real simultaneous turn requests, rollback, and interrupted/ambiguous commits. No migration, SQL execution, provisioning, or database connection was performed for Phase 2B.
+
+## P3.1 note proposal migration review — development access verified in P3.2
+
+`bun run db:generate --name note_proposals` generated `20261119144819_note_proposals/{migration.sql,snapshot.json}` offline using the unchanged config/Kit workflow. The v9 diff extends the chat snapshot and creates only `note_proposals`: 14 columns, PK, source-message UNIQUE, three CHECKs and three RESTRICT FKs. No standalone index, existing-table modification, data write, permission change or migration execution is included. Both previous migrations remain untouched.
+
+See [the proposal schema and application contract](../../../../docs/NOTE_PROPOSALS.md) for exact columns, derived source/owner mapping, receipt invariants, current P3.2 atomic chat/proposal/preview behavior and future P3.3 confirmation. P3.2 adds runtime tool/SSE/UI/service changes without changing this SQL or applying migrations. PM's current Data API-disabled confirmation is accepted; backend access was checked read-only as recorded above. The generated `public` table has no RLS policy; any future API exposure or permission change requires a separately approved access design. Never map Better Auth users to Supabase Auth `auth.uid()`. Real PostgreSQL write/constraint/concurrency verification remains distinct from these access checks and offline tests.

@@ -173,6 +173,13 @@ const operations = (service: ReturnType<typeof createChatService>) => [
   () => service.createConversation({ title: "Conversation" }),
   () => service.listConversations(),
   () => service.getConversation({ conversationId }),
+  () => service.getNoteProposal({ proposalId: projectId }),
+  () =>
+    service.completeProposal({
+      ...turnInput,
+      content: contracts.PROPOSAL_MESSAGE,
+      draft: { projectHint: null, title: "Draft", content: "Original", noteDate: null },
+    }),
   () => service.beginTurn(beginInput),
   () => service.completeResponse({ ...turnInput, content: "Answer" }),
   () => service.failResponse(turnInput),
@@ -185,7 +192,7 @@ test("every chat operation requires a fresh server session before SQL", async ()
   const f = fixture([], null);
   for (const call of operations(f.service)) failure(await call(), "UNAUTHENTICATED");
   assert.equal(f.calls.length, 0);
-  assert.equal(f.sessionCalls(), 9);
+  assert.equal(f.sessionCalls(), operations(f.service).length);
 });
 
 test("session expiry after confirmed begin denies context and every terminal/recovery operation before SQL", async () => {
@@ -452,6 +459,7 @@ test("latest history pages query backwards with owned scope then return user/ass
     },
     pending(),
     clock(),
+    { sql: /from "note_proposals"/, rows: [] },
     commit,
   ]);
   const view = data(
@@ -526,6 +534,7 @@ for (const status of ["pending", "completed", "failed", "stopped"]) {
       lock,
       replay([messageRow("user", "completed", content), messageRow("assistant", status)]),
       clock(),
+      ...(status === "completed" ? [{ sql: /from "note_proposals"/, rows: [] }] : []),
       commit,
     ]);
     const result = data(await f.service.beginTurn(beginInput));
@@ -913,4 +922,328 @@ test("concurrent different turns serialize: one pending pair and one conflict", 
   assert.equal(f.rows().length, 2);
   assert.equal(f.rows().filter((row) => row[5] === "pending").length, 1);
   assert.equal(f.waiting(), 2);
+});
+
+const proposalId = "77777777-7777-4777-8777-777777777777";
+const draft = {
+  projectHint: null,
+  title: "Draft title",
+  content: "  Original note\n",
+  noteDate: null,
+};
+const proposalInput = { ...turnInput, content: contracts.PROPOSAL_MESSAGE, draft };
+const proposalRow = [
+  proposalId,
+  messageRow()[0],
+  null,
+  draft.title,
+  draft.content,
+  null,
+  "proposed",
+  null,
+  null,
+  conversationId,
+  turnId,
+  null,
+  null,
+];
+const proposalRead: Step = {
+  sql: /from "note_proposals"/,
+  rows: [proposalRow],
+  inspect: (sql, params) => {
+    scoped(sql, params);
+    assert.match(sql, /inner join "chat_messages"/);
+    assert.ok(params.includes("assistant"));
+    assert.ok(params.includes("completed"));
+  },
+};
+const userSource: Step = {
+  sql: /select "content" from "chat_messages"/,
+  rows: [[content]],
+  inspect: messageScoped,
+};
+const proposalInsert: Step = {
+  sql: /^insert into "note_proposals"/,
+  rows: [[proposalId]],
+  inspect: (sql, params) => {
+    assert.ok(params.includes(messageRow()[0]));
+    assert.ok(params.includes(draft.content));
+    assert.deepEqual(params, [messageRow()[0], null, draft.title, draft.content, null]);
+    assert.match(sql, /\$5(?:, default){8}\)/);
+  },
+};
+
+test("proposal completion commits assistant, one original draft and activity in one transaction, never a note", async () => {
+  const f = fixture([
+    begin,
+    lock,
+    replay([messageRow()]),
+    userSource,
+    clock(),
+    terminal("completed", contracts.PROPOSAL_MESSAGE),
+    proposalInsert,
+    touch,
+    commit,
+  ]);
+  const result = data(await f.service.completeProposal(proposalInput));
+  assert.equal(result.proposal.id, proposalId);
+  assert.equal(result.proposal.sourceMessageId, result.id);
+  assert.deepEqual(result.proposal.draft, draft);
+  assert.equal(result.proposal.receipt, null);
+  assert.equal(result.proposal.scopedProject, null);
+  assert.match(f.calls[0]!, /read committed/);
+  assert.ok(!f.calls.some((sql) => sql.startsWith('insert into "notes"')));
+  exhausted(f);
+});
+
+for (const stage of ["insert", "activity", "commit"]) {
+  test(`proposal ${stage} failure requests rollback of both assistant and proposal without success`, async () => {
+    const steps: Step[] = [
+      begin,
+      lock,
+      replay([messageRow()]),
+      userSource,
+      clock(),
+      terminal("completed", contracts.PROPOSAL_MESSAGE),
+    ];
+    if (stage === "insert")
+      steps.push({ ...proposalInsert, error: new Error("private driver sentinel") });
+    else {
+      steps.push(proposalInsert);
+      if (stage === "activity")
+        steps.push({ ...touch, error: new Error("private driver sentinel") });
+      else steps.push(touch, { ...commit, error: new Error("private commit sentinel") });
+    }
+    steps.push(rollback);
+    const f = fixture(steps);
+    const result = await f.service.completeProposal(proposalInput);
+    failure(result, "UNAVAILABLE");
+    assert.ok(!JSON.stringify(result).includes("sentinel"));
+    assert.equal(f.calls.at(-1), "rollback");
+    exhausted(f);
+  });
+}
+
+test("proposal completion rechecks owned scoped project under share lock and rejects conflicting hints", async () => {
+  const f = fixture([
+    begin,
+    { ...lock, rows: [[conversationId, projectId, "Chat", now, now]] },
+    replay([messageRow()]),
+    {
+      sql: /select "name" from "projects".*for share/,
+      rows: [["Owned project"]],
+      inspect: (sql, params) => {
+        assert.ok(params.includes("user-a"));
+        assert.ok(params.includes(projectId));
+      },
+    },
+    userSource,
+    rollback,
+  ]);
+  failure(
+    await f.service.completeProposal({
+      ...proposalInput,
+      draft: { ...draft, projectHint: "Another project" },
+    }),
+    "INVALID_INPUT",
+  );
+  assert.ok(!f.calls.some((sql) => /^(insert|update)/.test(sql)));
+  exhausted(f);
+});
+
+test("proposal source/date/deadline/session denial never inserts actionable drafts", async () => {
+  const foreign = fixture([begin, { ...lock, rows: [] }, rollback]);
+  failure(await foreign.service.completeProposal(proposalInput), "NOT_FOUND");
+  exhausted(foreign);
+  const missingUser = fixture([
+    begin,
+    lock,
+    replay([messageRow()]),
+    { ...userSource, rows: [] },
+    rollback,
+  ]);
+  failure(await missingUser.service.completeProposal(proposalInput), "NOT_FOUND");
+  exhausted(missingUser);
+  const invented = fixture([begin, lock, replay([messageRow()]), userSource, rollback]);
+  failure(
+    await invented.service.completeProposal({
+      ...proposalInput,
+      draft: { ...draft, noteDate: "2026-01-01" },
+    }),
+    "INVALID_INPUT",
+  );
+  exhausted(invented);
+  const expired = fixture([
+    begin,
+    lock,
+    replay([messageRow()]),
+    userSource,
+    clock(new Date(now.getTime() + PENDING_TIMEOUT_MS)),
+    rollback,
+  ]);
+  failure(await expired.service.completeProposal(proposalInput), "CONFLICT");
+  exhausted(expired);
+  const session = fixture();
+  session.expireSession();
+  failure(await session.service.completeProposal(proposalInput), "UNAUTHENTICATED");
+  assert.deepEqual(session.calls, []);
+});
+
+test("proposal terminal callback replay returns same identity without writes; changed draft conflicts", async () => {
+  for (const changed of [false, true]) {
+    const f = fixture([
+      begin,
+      lock,
+      replay([messageRow("assistant", "completed", contracts.PROPOSAL_MESSAGE)]),
+      proposalRead,
+      changed ? rollback : commit,
+    ]);
+    const result = await f.service.completeProposal({
+      ...proposalInput,
+      draft: changed ? { ...draft, content: "Changed" } : draft,
+    });
+    if (changed) failure(result, "CONFLICT");
+    else assert.equal(data(result).proposal.id, proposalId);
+    assert.ok(!f.calls.some((sql) => /^(insert|update)/.test(sql)));
+    exhausted(f);
+  }
+  for (const status of ["failed", "stopped"]) {
+    const f = fixture([begin, lock, replay([messageRow("assistant", status)]), rollback]);
+    failure(await f.service.completeProposal(proposalInput), "CONFLICT");
+    exhausted(f);
+  }
+});
+
+test("proposal read uses fresh session, owned source and read-only snapshot; foreign/missing IDs are indistinguishable", async () => {
+  const f = fixture([{ sql: /begin.*read only/ }, proposalRead, commit]);
+  const result = data(await f.service.getNoteProposal({ proposalId }));
+  assert.equal(result.id, proposalId);
+  assert.equal(f.sessionCalls(), 1);
+  exhausted(f);
+  for (const owner of ["user-a", "user-b"]) {
+    const denied = fixture(
+      [
+        { sql: /begin.*read only/ },
+        {
+          sql: /from "note_proposals"/,
+          rows: [],
+          inspect: (sql, params) => {
+            assert.match(sql, /"chat_conversations"\."owner_id" = \$/);
+            assert.ok(params.includes(owner));
+          },
+        },
+        rollback,
+      ],
+      owner,
+    );
+    failure(await denied.service.getNoteProposal({ proposalId }), "NOT_FOUND");
+    exhausted(denied);
+  }
+});
+
+test("history and same-turn replay recover the committed original proposal in a bounded read", async () => {
+  const history = fixture([
+    { sql: /begin.*read only/ },
+    { sql: /from "chat_conversations"/, rows: [conversationRow] },
+    {
+      sql: /from "chat_messages".*order by/,
+      rows: [messageRow("assistant", "completed", contracts.PROPOSAL_MESSAGE)],
+    },
+    pending(),
+    clock(),
+    {
+      ...proposalRead,
+      inspect: (sql, params) => {
+        assert.match(sql, /"source_message_id" in \(/);
+        assert.equal(params.filter((p) => p === messageRow()[0]).length, 1);
+      },
+    },
+    commit,
+  ]);
+  assert.equal(
+    data(await history.service.getConversation({ conversationId })).messages[0]!.proposal!.id,
+    proposalId,
+  );
+  exhausted(history);
+  const replayed = fixture([
+    begin,
+    lock,
+    replay([
+      messageRow("user", "completed", content),
+      messageRow("assistant", "completed", contracts.PROPOSAL_MESSAGE),
+    ]),
+    clock(),
+    proposalRead,
+    commit,
+  ]);
+  assert.equal(data(await replayed.service.beginTurn(beginInput)).proposal!.id, proposalId);
+  exhausted(replayed);
+});
+
+test("confirmed proposal reads revalidate note ownership and fixed scope without mutating receipts", async () => {
+  const noteId = "88888888-8888-4888-8888-888888888888";
+  for (const scenario of ["owned", "foreign-note", "scope-mismatch"]) {
+    const row = [...proposalRow];
+    row[6] = "confirmed";
+    row[7] = noteId;
+    row[8] = projectId;
+    if (scenario === "scope-mismatch") {
+      row[11] = nextTurnId;
+      row[12] = "Owned source project";
+    }
+    const f = fixture([
+      { sql: /begin.*read only/ },
+      { ...proposalRead, rows: [row] },
+      {
+        sql: /from "notes" inner join "projects"/,
+        rows: scenario === "foreign-note" ? [] : [[noteId]],
+        inspect: (sql, params) => {
+          assert.match(sql, /"projects"\."owner_id" = \$/);
+          assert.deepEqual(params, [noteId, projectId, "user-a"]);
+        },
+      },
+      scenario === "owned" ? commit : rollback,
+    ]);
+    const result = await f.service.getNoteProposal({ proposalId });
+    if (scenario === "owned")
+      assert.deepEqual(data(result).receipt, {
+        noteId,
+        projectId,
+        href: `/projects/${projectId}/notes/${noteId}`,
+      });
+    else failure(result, "NOT_FOUND");
+    assert.ok(!f.calls.some((sql) => /^(insert|update)/.test(sql)));
+    exhausted(f);
+  }
+});
+
+test("draft validation preserves content, requires nullable fields and never invents dates or project scope", () => {
+  const valid = contracts.prepareNoteInput.parse({
+    ...draft,
+    title: "  Trim title  ",
+    noteDate: "0001-01-01",
+  });
+  assert.equal(valid.title, "Trim title");
+  assert.equal(valid.content, draft.content);
+  assert.equal(contracts.proposalMatchesContext(valid, "Historical date 0001-01-01", null), true);
+  assert.equal(contracts.proposalMatchesContext(valid, "Yesterday", null), false);
+  assert.equal(
+    contracts.proposalMatchesContext({ ...draft, projectHint: "Different" }, content, "Owned"),
+    false,
+  );
+  assert.equal(
+    contracts.proposalMatchesContext({ ...draft, projectHint: "owned" }, content, "Owned"),
+    true,
+  );
+  for (const value of [
+    { ...draft, projectHint: undefined },
+    { ...draft, noteDate: undefined },
+    { ...draft, noteDate: "2026-02-30" },
+    { ...draft, noteDate: "0000-01-01" },
+    { ...draft, projectId },
+    { ...draft, title: "bad\u0000" },
+    { ...draft, content: "bad\ud800" },
+  ]) {
+    assert.equal(contracts.prepareNoteInput.safeParse(value).success, false);
+  }
 });

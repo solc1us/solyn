@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { createNoteInput } from "../workspace/contracts";
+
 export type ErrorCode =
   | "UNAUTHENTICATED"
   | "INVALID_INPUT"
@@ -52,6 +54,74 @@ export const endResponseInput = z.strictObject({
   // Failed/stopped output may be empty or partial, but must never contain raw errors.
   content: z.string().max(100_000).optional(),
 });
+// Shared note validation, with no model-controlled identity or write capability.
+export const prepareNoteInput = z.strictObject({
+  projectHint: z.string().trim().min(1).max(200).refine(isChatText).nullable(),
+  title: createNoteInput.shape.title.refine(isChatText),
+  content: createNoteInput.shape.content.refine(isChatText),
+  noteDate: createNoteInput.shape.noteDate.unwrap(),
+});
+export const confirmNoteProposalInput = z.strictObject({
+  proposalId: uuid,
+  projectId: uuid,
+  title: prepareNoteInput.shape.title,
+  content: prepareNoteInput.shape.content,
+  noteDate: prepareNoteInput.shape.noteDate,
+});
+export type ConfirmNoteProposalInput = z.infer<typeof confirmNoteProposalInput>;
+export const confirmationReceiptSchema = z
+  .strictObject({
+    proposalId: uuid,
+    noteId: uuid,
+    projectId: uuid,
+    href: z.string(),
+    replayed: z.boolean(),
+  })
+  .refine((value) => value.href === `/projects/${value.projectId}/notes/${value.noteId}`);
+export type NoteDraft = z.infer<typeof prepareNoteInput>;
+export const completeProposalInput = completeResponseInput.extend({ draft: prepareNoteInput });
+export const proposalViewSchema = z
+  .strictObject({
+    id: uuid,
+    sourceMessageId: uuid,
+    conversationId: uuid,
+    turnId: uuid,
+    status: z.enum(["proposed", "confirmed"]),
+    draft: prepareNoteInput,
+    scopedProject: z
+      .strictObject({ id: uuid, name: z.string().max(200).refine(isChatText) })
+      .nullable(),
+    receipt: z.strictObject({ noteId: uuid, projectId: uuid, href: z.string() }).nullable(),
+  })
+  .superRefine((value, context) => {
+    if ((value.status === "confirmed") !== (value.receipt !== null))
+      context.addIssue({ code: "custom", message: "Invalid proposal receipt." });
+    if (
+      value.receipt &&
+      value.receipt.href !== `/projects/${value.receipt.projectId}/notes/${value.receipt.noteId}`
+    )
+      context.addIssue({ code: "custom", message: "Invalid note link." });
+  });
+export type ProposalView = z.infer<typeof proposalViewSchema>;
+export const getProposalInput = z.strictObject({ proposalId: uuid });
+export const PROPOSAL_MESSAGE = "Draft ready for review. No note has been saved.";
+
+// Until a reviewed date parser exists, accept only a literal ISO date from the
+// current user message. Unknown/relative dates stay null and can be edited locally.
+export function proposalMatchesContext(
+  draft: NoteDraft,
+  userContent: string,
+  projectName: string | null,
+) {
+  const dates: string[] = userContent.match(/\b\d{4}-\d{2}-\d{2}\b/g) ?? [];
+  return (
+    (!draft.noteDate || dates.includes(draft.noteDate)) &&
+    (!projectName ||
+      !draft.projectHint ||
+      draft.projectHint.toLowerCase() === projectName.trim().toLowerCase())
+  );
+}
+
 export const recoverTurnInput = z.strictObject(turn);
 export const generationContextInput = z.strictObject(turn);
 

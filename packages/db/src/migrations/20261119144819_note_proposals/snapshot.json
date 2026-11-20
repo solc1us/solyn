@@ -1,0 +1,416 @@
+{
+  "type": "diff",
+  "version": "9",
+  "dialect": "postgres",
+  "id": "18294657-03cc-4a2b-a514-06e72ccd731a",
+  "prevIds": ["c6c29e50-bb14-47cd-abeb-41b9e58cb897"],
+  "footprints": [
+    {
+      "statementType": "create_table",
+      "statementTarget": ["table", "public", "note_proposals"],
+      "writes": [
+        "s|tbl|public.note_proposals",
+        "n|tbl|public.note_proposals",
+        "e|tbl|public.note_proposals",
+        "n|rel|public.note_proposals",
+        "n|type|public.note_proposals",
+        "n|rel|public.note_proposals_pkey",
+        "n|rel|public.note_proposals_source_message_unique"
+      ],
+      "reads": ["n|sch|public"]
+    },
+    {
+      "statementType": "create_fk",
+      "statementTarget": ["table", "public", "note_proposals"],
+      "writes": [
+        "s|fk|public.note_proposals.note_proposals_source_message_id_chat_messages_id_fkey",
+        "n|fk|public.note_proposals.note_proposals_source_message_id_chat_messages_id_fkey",
+        "e|fk|public.note_proposals.note_proposals_source_message_id_chat_messages_id_fkey",
+        "n|con|public.note_proposals.note_proposals_source_message_id_chat_messages_id_fkey"
+      ],
+      "reads": [
+        "n|tbl|public.note_proposals",
+        "n|sch|public",
+        "n|tbl|public.chat_messages",
+        "n|sch|public",
+        "n|col|public.note_proposals.source_message_id",
+        "n|col|public.chat_messages.id",
+        "e|uniqueness|public.chat_messages.id"
+      ]
+    },
+    {
+      "statementType": "create_fk",
+      "statementTarget": ["table", "public", "note_proposals"],
+      "writes": [
+        "s|fk|public.note_proposals.note_proposals_note_id_notes_id_fkey",
+        "n|fk|public.note_proposals.note_proposals_note_id_notes_id_fkey",
+        "e|fk|public.note_proposals.note_proposals_note_id_notes_id_fkey",
+        "n|con|public.note_proposals.note_proposals_note_id_notes_id_fkey"
+      ],
+      "reads": [
+        "n|tbl|public.note_proposals",
+        "n|sch|public",
+        "n|tbl|public.notes",
+        "n|sch|public",
+        "n|col|public.note_proposals.note_id",
+        "n|col|public.notes.id",
+        "e|uniqueness|public.notes.id"
+      ]
+    },
+    {
+      "statementType": "create_fk",
+      "statementTarget": ["table", "public", "note_proposals"],
+      "writes": [
+        "s|fk|public.note_proposals.note_proposals_approved_project_id_projects_id_fkey",
+        "n|fk|public.note_proposals.note_proposals_approved_project_id_projects_id_fkey",
+        "e|fk|public.note_proposals.note_proposals_approved_project_id_projects_id_fkey",
+        "n|con|public.note_proposals.note_proposals_approved_project_id_projects_id_fkey"
+      ],
+      "reads": [
+        "n|tbl|public.note_proposals",
+        "n|sch|public",
+        "n|tbl|public.projects",
+        "n|sch|public",
+        "n|col|public.note_proposals.approved_project_id",
+        "n|col|public.projects.id",
+        "e|uniqueness|public.projects.id"
+      ]
+    }
+  ],
+  "deltas": [
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "name": "note_proposals",
+        "isRlsEnabled": false,
+        "entityType": "tables"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "gen_random_uuid()",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "source_message_id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "project_hint",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "title",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "content",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "note_date",
+        "type": "date",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "status",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "'proposed'",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "note_id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "approved_project_id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "approved_title",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "approved_content",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "approved_note_date",
+        "type": "date",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "created_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "now()",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "confirmed_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "note_proposals_source_message_id_chat_messages_id_fkey",
+        "nameExplicit": false,
+        "columns": ["source_message_id"],
+        "schemaTo": "public",
+        "tableTo": "chat_messages",
+        "columnsTo": ["id"],
+        "onUpdate": "NO ACTION",
+        "onDelete": "RESTRICT",
+        "entityType": "fks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "note_proposals_note_id_notes_id_fkey",
+        "nameExplicit": false,
+        "columns": ["note_id"],
+        "schemaTo": "public",
+        "tableTo": "notes",
+        "columnsTo": ["id"],
+        "onUpdate": "NO ACTION",
+        "onDelete": "RESTRICT",
+        "entityType": "fks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "note_proposals_approved_project_id_projects_id_fkey",
+        "nameExplicit": false,
+        "columns": ["approved_project_id"],
+        "schemaTo": "public",
+        "tableTo": "projects",
+        "columnsTo": ["id"],
+        "onUpdate": "NO ACTION",
+        "onDelete": "RESTRICT",
+        "entityType": "fks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "note_proposals_pkey",
+        "columns": ["id"],
+        "nameExplicit": false,
+        "entityType": "pks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "note_proposals_source_message_unique",
+        "nameExplicit": true,
+        "columns": ["source_message_id"],
+        "nullsNotDistinct": false,
+        "entityType": "uniques"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "note_proposals_draft_nonblank",
+        "value": "\"title\" ~ '[^[:space:]]' and \"content\" ~ '[^[:space:]]'",
+        "entityType": "checks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "note_proposals_approved_nonblank",
+        "value": "(\"approved_title\" is null or \"approved_title\" ~ '[^[:space:]]') and (\"approved_content\" is null or \"approved_content\" ~ '[^[:space:]]')",
+        "entityType": "checks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "note_proposals",
+        "name": "note_proposals_receipt_consistent",
+        "value": "(\"status\" = 'proposed' and \"note_id\" is null and \"approved_project_id\" is null and \"approved_title\" is null and \"approved_content\" is null and \"approved_note_date\" is null and \"confirmed_at\" is null) or (\"status\" = 'confirmed' and \"note_id\" is not null and \"approved_project_id\" is not null and \"approved_title\" is not null and \"approved_content\" is not null and \"confirmed_at\" is not null)",
+        "entityType": "checks"
+      }
+    }
+  ]
+}

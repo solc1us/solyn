@@ -3,7 +3,7 @@
 ## Entry points
 
 - Server Components / future server-side tool handlers import `workspace` from `./server`.
-- Client UI imports the eight async functions from `./actions` (Next.js Server Functions).
+- Client UI imports authenticated async functions from `./actions` (Next.js Server Functions), including the dedicated P3.3 `confirmNoteProposal` action.
 - Do not instantiate `createWorkspaceService` with client/model identity. Its dependency seam is only for trusted server composition and offline tests. `server.ts` is guarded with `server-only` and obtains a fresh Better Auth session from request headers on every operation.
 - All operations enforce session, validation and ownership internally. Actions contain no duplicate business logic or extra HTTP API. Phase 1E adds path revalidation to successful mutation adapters, without changing the domain operations or response contracts.
 
@@ -33,7 +33,9 @@ Every operation returns `Promise<WorkspaceResult<T>>`: either `{ ok: true, data 
 | `createNote`    | `{ projectId, title, content, noteDate? }`                            | Full note DTO with `version: 1`        |
 | `updateNote`    | `{ projectId, noteId, expectedVersion, title?, content?, noteDate? }` | Full note DTO plus resulting `version` |
 
-Inputs are accepted as `unknown` at the boundary and validated with strict Zod schemas in `contracts.ts`. Unknown keys, including `ownerId`/`userId`, are rejected. Project and note updates require at least one allowed change. `projectId` in note updates is the original resource scope, never a reassignment field.
+`confirmNoteProposal({ proposalId, projectId, title, content, noteDate: string | null })` returns `{ proposalId, noteId, projectId, href, replayed }` only after commit. Its strict shared confirmation contract lives in `../chat/contracts.ts`; the explicitly nullable date is required and all text rejects NUL/lone surrogates. It is a user action, not a model tool.
+
+Inputs are accepted as `unknown` at the boundary and validated with strict Zod schemas in `contracts.ts` (or the shared confirmation contract). Unknown keys, including `ownerId`/`userId`, are rejected. Project and note updates require at least one allowed change. `projectId` in note updates is the original resource scope, never a reassignment field.
 
 Limits: project names 200 characters, descriptions 5,000, titles 300, content 100,000 (JavaScript string lengths). Names/titles are trimmed and must be nonblank; content must contain non-whitespace text and is stored **without trimming or transformation**. Dates are nullable, strictly validated `YYYY-MM-DD` calendar dates, years 0001–9999, never defaulted from creation time. Omitted date/description on creation becomes null; omission on update preserves the current value, explicit null clears it.
 
@@ -45,12 +47,20 @@ Lists default to 50 rows, maximum 100, with offset 0–100,000. Ordering is `upd
 
 A mismatched `expectedVersion` returns `CONFLICT`, even for a stale no-op. A current no-op returns the unchanged note/version without writes. Meaningful title/content/date changes insert the outgoing snapshot, then update the same ownership-scoped note; exceptions and missing update results throw inside the transaction. Successful data is returned only after commit. The row lock serializes writers using this protocol; the database unique constraint is the final duplicate guard. Integer exhaustion is rejected instead of overflowing revision numbering.
 
-Creation checks and share-locks the owned parent before inserting a note. Neither creation nor any operation reassigns ownership/projects or deletes data. Current-state writes outside this service would violate the revision protocol and must not be introduced.
+Creation checks and share-locks the owned parent before inserting a note. P3.3 extracts this unchanged SQL/response behavior into private `lockOwnedProject`/`createNoteInTransaction` helpers, shared by manual create and confirmation under their own outer transaction. No raw insert primitive is exported. Neither creation nor any operation reassigns ownership/projects or deletes data. Current-state writes outside this service would violate the revision protocol and must not be introduced.
+
+## P3.3 confirmation transaction
+
+Confirmation authenticates/validates, discovers an authorized completed assistant source, then takes a conversation SHARE lock, proposal UPDATE lock with fresh source predicates, and selected owned-project SHARE lock in that order under READ COMMITTED. Scoped conversations cannot target a different project; general conversations require an explicitly selected owned project. Missing/foreign resources deny identically.
+
+A proposed row inserts one version-1 note through the shared private core and atomically fills approved project/title/content/date, note ID, status and database confirmation time. Any failure rolls back both writes. Exact confirmed replay compares the immutable approved fields, verifies the current note's project/ownership, returns its original ID and changes nothing; later normal note edits do not invalidate replay. A changed payload conflicts. The proposal row lock, not a disabled button, serializes confirmations, without another key/table. Successful actions revalidate dashboard/project/note views only after commit; confirmation does not reorder chat history.
+
+`note-confirmation.test.ts` adds offline SQL/denial/rollback/replay tests and a deterministic proposal-mutex/commit simulator, including two simultaneous identical/different confirmations and lost acknowledgement. The chat state tests cover explicit Save, immutable in-memory pending payload, read-only recovery, explicit same-payload retry, stale receipts and SSR controls. This is not live PostgreSQL concurrency/rollback or browser proof. See `docs/NOTE_PROPOSALS.md`; stop for review before P3.4.
 
 ## Verification boundary and pending integration checks
 
 Run `bun test apps/web/src/features/workspace/workspace.test.ts`. Tests use the real Drizzle builder with a scripted, non-network driver, checking session/validation denial, parameterized ownership scopes, DTOs, version transitions, no-ops/stale edits and transaction rollback **requests**. No real database is contacted. They do not establish database rollback, lock scheduling or cross-account persistence correctness.
 
-Before runtime use, PM must approve a disposable PostgreSQL development target and the Phase 1C migration/baseline and Supabase Data API exposure review. Pending tests: two-user persisted isolation; independent connection races with the same version (one success, one conflict); later sequential edits without duplicate/gapped snapshots; genuine rollback after injected update/snapshot/commit failures; calendar-date/timestamp round trips; and authenticated Server Function/browser integration. No schema changes, migrations or owner provisioning were executed here.
+The existing development schema/backend access and Data API-disabled boundary are PM-confirmed; P3.3 adds no migration or permission change. P3.4 real write/concurrency tests need separate approval for an exact disposable PostgreSQL target, fixtures and cleanup. Pending tests: two-user persisted isolation; independent connection races with the same version (one success, one conflict); later sequential edits without duplicate/gapped snapshots; genuine rollback after injected update/snapshot/commit failures; calendar-date/timestamp round trips; and authenticated Server Function/browser integration. No schema changes, migrations or owner provisioning were executed here.
 
-No automatic retries are performed. On an uncertain network/commit failure, reload state before retrying a write; create operations do not yet have idempotency keys. Rate limiting, project optimistic concurrency and revision-history browsing are not introduced in this phase.
+No automatic retries are performed. On an uncertain network/commit failure, reload state before retrying a write; manual create operations do not have idempotency keys; P3.3 proposal confirmation uses its existing proposal ID and immutable receipt. Rate limiting, project optimistic concurrency and revision-history browsing are not introduced in this phase.

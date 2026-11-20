@@ -16,6 +16,7 @@ import {
 } from "react";
 
 import * as actions from "./actions";
+import { confirmNoteProposal } from "../workspace/actions";
 import {
   ChatSession,
   ChatSessions,
@@ -25,6 +26,8 @@ import {
 } from "./client-state";
 import { CHAT_INPUT_LIMIT } from "./contracts";
 import { MessageContent } from "./message-content";
+import { ProposalPreview } from "./proposal-preview";
+import { useUnsavedChanges } from "../workspace/use-unsaved-changes";
 import { issueMessages, type Issue } from "./transport";
 
 type Initial = Awaited<ReturnType<typeof actions.getConversation>>;
@@ -137,6 +140,8 @@ export default function ChatScreen({
       const session = new ChatSession(
         {
           create: actions.createConversation,
+          confirm: confirmNoteProposal,
+          recoverProposal: actions.getNoteProposal,
           read: actions.getConversation,
           fetch: (...args) => fetch(...args),
           uuid: () => crypto.randomUUID(),
@@ -160,6 +165,7 @@ export default function ChatScreen({
   if (selection.key !== routeKey) setSelection({ key: routeKey, session: select() });
   const session = selection.session;
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  useUnsavedChanges(session.hasProposalChanges);
   const previousSession = useRef(session);
   useEffect(() => {
     // Adopt a fresh authorized snapshot when returning to a cached conversation,
@@ -201,14 +207,7 @@ export default function ChatScreen({
       session.stop();
     };
     const click = (event: MouseEvent) => {
-      if (
-        event.defaultPrevented ||
-        event.button !== 0 ||
-        event.ctrlKey ||
-        event.metaKey ||
-        event.shiftKey ||
-        event.altKey
-      )
+      if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey)
         return;
       const link =
         event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
@@ -222,10 +221,12 @@ export default function ChatScreen({
       )
         leave();
     };
-    document.addEventListener("click", click, true);
+    // The shared unsaved-changes capture guard stops propagation on cancellation.
+    // Next Link itself prevents native default on accepted client navigation.
+    document.addEventListener("click", click);
     window.addEventListener("popstate", leave);
     return () => {
-      document.removeEventListener("click", click, true);
+      document.removeEventListener("click", click);
       window.removeEventListener("popstate", leave);
     };
   }, [session]);
@@ -389,6 +390,22 @@ export default function ChatScreen({
                       : "No answer was saved."}
                 </p>
               )}
+              {message.persisted && message.status === "completed" && message.proposal ? (
+                <ProposalPreview
+                  key={message.proposal.id}
+                  proposal={message.proposal}
+                  loadProjects={actions.listProposalProjects}
+                  saveState={state.proposalSaves[message.proposal.id]}
+                  save={() =>
+                    startTransition(async () => session.confirmProposal(message.proposal!.id))
+                  }
+                  recover={() =>
+                    startTransition(async () => session.recoverProposal(message.proposal!.id))
+                  }
+                  edit={state.proposalEdits[message.proposal.id]}
+                  change={(patch) => session.editProposal(message.proposal!.id, patch)}
+                />
+              ) : null}
             </article>
           ))}
         </div>
@@ -440,6 +457,13 @@ export default function ChatScreen({
                 variant="ghost"
                 disabled={busy}
                 onClick={() => {
+                  if (
+                    session.hasProposalChanges &&
+                    !window.confirm(
+                      "Reload the original drafts? Your local note edits will be lost.",
+                    )
+                  )
+                    return;
                   pinned.current = true;
                   startTransition(async () => session.reload());
                 }}
@@ -460,6 +484,7 @@ export default function ChatScreen({
           </div>
           <form
             ref={form}
+            data-unsaved={session.hasProposalChanges ? "true" : "false"}
             className="chat-composer rounded-[8px] border border-input bg-canvas p-[10px] focus-within:border-ring"
             onSubmit={(event) => {
               event.preventDefault();
@@ -517,7 +542,8 @@ export default function ChatScreen({
             </div>
           </form>
           <p className="chat-help mt-[8px] text-[12px] text-muted-foreground" id="chat-input-help">
-            Enter to send · Shift+Enter for a new line. Project notes aren’t available in chat yet.
+            Enter to send · Shift+Enter for a new line. Ask to prepare a note draft; review edits
+            locally. Stored project notes are not available to chat.
           </p>
         </div>
       </div>

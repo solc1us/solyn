@@ -1,6 +1,9 @@
 import type { Database } from "@solyn/db";
 import { noteRevisions, notes, projects } from "@solyn/db/schema/workspace";
-import { and, desc, eq, exists, max, sql } from "drizzle-orm";
+import { chatConversations, chatMessages } from "@solyn/db/schema/chat";
+import { noteProposals } from "@solyn/db/schema/note-proposals";
+import { and, desc, eq, exists, isNull, max, or, sql } from "drizzle-orm";
+import { confirmNoteProposalInput } from "../chat/contracts";
 import type { z } from "zod";
 
 import * as contracts from "./contracts";
@@ -83,7 +86,160 @@ export function createWorkspaceService(dependencies: {
     }
   }
 
+  type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+  async function lockOwnedProject(tx: Transaction, projectId: string, ownerId: string) {
+    const [project] = await tx
+      .select({ id: projects.id })
+      .from(projects)
+      .where(ownedProject(projectId, ownerId))
+      .for("share");
+    if (!project) throw missing();
+    return project;
+  }
+  // Private transaction-compatible core: caller has authenticated/validated, and
+  // owns the transaction. Never opens a nested independent transaction.
+  async function createNoteInTransaction(
+    tx: Transaction,
+    value: z.output<typeof contracts.createNoteInput>,
+    ownerId: string,
+  ) {
+    const project = await lockOwnedProject(tx, value.projectId, ownerId);
+    const [note] = await tx
+      .insert(notes)
+      .values({
+        projectId: project.id,
+        title: value.title,
+        content: value.content,
+        noteDate: value.noteDate ?? null,
+      })
+      .returning(noteFields);
+    if (!note) throw new Error("Insert returned no note");
+    return { ...note, version: 1 };
+  }
+  const ownedConversation = (ownerId: string) =>
+    and(
+      eq(chatConversations.ownerId, ownerId),
+      or(
+        isNull(chatConversations.projectId),
+        exists(
+          db
+            .select({ id: projects.id })
+            .from(projects)
+            .where(
+              and(eq(projects.id, chatConversations.projectId), eq(projects.ownerId, ownerId)),
+            ),
+        ),
+      ),
+    );
+
   return {
+    confirmNoteProposal(input: unknown) {
+      return run(confirmNoteProposalInput, input, (value, ownerId) =>
+        db.transaction(
+          async (tx) => {
+            // Discovery is not a lock/authorization cache. Re-read source and receipt
+            // AFTER the conversation lock, then the proposal lock (READ COMMITTED).
+            const [source] = await tx
+              .select({ conversationId: chatMessages.conversationId })
+              .from(noteProposals)
+              .innerJoin(chatMessages, eq(chatMessages.id, noteProposals.sourceMessageId))
+              .innerJoin(chatConversations, eq(chatConversations.id, chatMessages.conversationId))
+              .where(
+                and(
+                  eq(noteProposals.id, value.proposalId),
+                  ownedConversation(ownerId),
+                  eq(chatMessages.role, "assistant"),
+                  eq(chatMessages.status, "completed"),
+                ),
+              );
+            if (!source) throw missing();
+            const [conversation] = await tx
+              .select({ id: chatConversations.id, projectId: chatConversations.projectId })
+              .from(chatConversations)
+              .where(
+                and(eq(chatConversations.id, source.conversationId), ownedConversation(ownerId)),
+              )
+              .for("share", { of: chatConversations });
+            if (!conversation) throw missing();
+            const [proposal] = await tx
+              .select({
+                id: noteProposals.id,
+                status: noteProposals.status,
+                noteId: noteProposals.noteId,
+                projectId: noteProposals.approvedProjectId,
+                title: noteProposals.approvedTitle,
+                content: noteProposals.approvedContent,
+                noteDate: noteProposals.approvedNoteDate,
+              })
+              .from(noteProposals)
+              .innerJoin(chatMessages, eq(chatMessages.id, noteProposals.sourceMessageId))
+              .innerJoin(chatConversations, eq(chatConversations.id, chatMessages.conversationId))
+              .where(
+                and(
+                  eq(noteProposals.id, value.proposalId),
+                  eq(chatMessages.conversationId, conversation.id),
+                  ownedConversation(ownerId),
+                  eq(chatMessages.role, "assistant"),
+                  eq(chatMessages.status, "completed"),
+                ),
+              )
+              .for("update", { of: noteProposals });
+            if (!proposal) throw missing();
+            // Validate ownership before returning a scope conflict: foreign/missing
+            // final projects both deny identically, without exposing their existence.
+            if (conversation.projectId && conversation.projectId !== value.projectId) {
+              await lockOwnedProject(tx, value.projectId, ownerId);
+              throw conflict();
+            }
+            let noteId: string;
+            const replayed = proposal.status === "confirmed";
+            if (replayed) {
+              await lockOwnedProject(tx, value.projectId, ownerId);
+              if (
+                proposal.projectId !== value.projectId ||
+                proposal.title !== value.title ||
+                proposal.content !== value.content ||
+                proposal.noteDate !== value.noteDate
+              )
+                throw conflict();
+              if (!proposal.noteId) throw missing();
+              const [note] = await tx
+                .select({ id: notes.id })
+                .from(notes)
+                .where(ownedNote(value.projectId, ownerId, proposal.noteId));
+              if (!note) throw missing();
+              noteId = note.id;
+            } else {
+              if (proposal.status !== "proposed") throw conflict();
+              const note = await createNoteInTransaction(tx, value, ownerId);
+              noteId = note.id;
+              const [receipt] = await tx
+                .update(noteProposals)
+                .set({
+                  status: "confirmed",
+                  noteId,
+                  approvedProjectId: value.projectId,
+                  approvedTitle: value.title,
+                  approvedContent: value.content,
+                  approvedNoteDate: value.noteDate,
+                  confirmedAt: sql`clock_timestamp()`,
+                })
+                .where(and(eq(noteProposals.id, proposal.id), eq(noteProposals.status, "proposed")))
+                .returning({ id: noteProposals.id });
+              if (!receipt) throw conflict(); // Also rolls back the inserted note.
+            }
+            return {
+              proposalId: proposal.id,
+              noteId,
+              projectId: value.projectId,
+              href: `/projects/${value.projectId}/notes/${noteId}`,
+              replayed,
+            };
+          },
+          { isolationLevel: "read committed" },
+        ),
+      );
+    },
     listProjects(input: unknown = {}) {
       return run(contracts.listProjectsInput, input, async (value, ownerId) =>
         db
@@ -162,25 +318,7 @@ export function createWorkspaceService(dependencies: {
     },
     createNote(input: unknown) {
       return run(contracts.createNoteInput, input, async (value, ownerId) =>
-        db.transaction(async (tx) => {
-          const [project] = await tx
-            .select({ id: projects.id })
-            .from(projects)
-            .where(ownedProject(value.projectId, ownerId))
-            .for("share");
-          if (!project) throw missing();
-          const [note] = await tx
-            .insert(notes)
-            .values({
-              projectId: project.id,
-              title: value.title,
-              content: value.content,
-              noteDate: value.noteDate ?? null,
-            })
-            .returning(noteFields);
-          if (!note) throw new Error("Insert returned no note");
-          return { ...note, version: 1 };
-        }),
+        db.transaction((tx) => createNoteInTransaction(tx, value, ownerId)),
       );
     },
     updateNote(input: unknown) {
