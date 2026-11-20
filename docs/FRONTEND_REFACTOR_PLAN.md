@@ -1,8 +1,8 @@
 # Frontend styling refactor — audit, plan and closure
 
-**Status:** R1–R3 implemented and reviewed; R4 audit complete with no further runtime cleanup warranted. Final PM browser acceptance and merge authorization remain pending.
+**Status:** R1–R4 completed and committed through `06edd17`, now included in `main` and the Phase 3 merge (`0ca0856`). No further runtime cleanup was warranted. The acceptance checklist below is historical guidance, not a pending merge gate or a claim of newly performed browser QA.
 
-**Branch:** `refactor/web-tailwind-styling`
+**Historical branch:** `refactor/web-tailwind-styling`
 
 **Audited/base commit:** `e5393e5a408b372a5845beecd632164691e77403`
 
@@ -25,7 +25,7 @@ Final checks before merging:
 - `bunx oxfmt --check` over 28 supported, nongenerated Phase 2 source/documentation files: pass. Generated migration snapshot/SQL, environment schema and lockfile were not reformatted.
 - `git diff --check main...feat/phase-2-ai-chat` and working-tree check: pass.
 
-Executed `git merge --ff-only feat/phase-2-ai-chat` on `main`, pushed `main`, fetched and verified matching hashes. Created the refactor branch from updated main and pushed it with upstream tracking. `main`, `origin/main`, Phase 2 and the new local/remote branch all pointed at `e5393e5a408b372a5845beecd632164691e77403`. No branch deletion, history rewrite, migration or deployment occurred. This audit document is an uncommitted R0 deliverable, not a new implementation commit.
+Executed `git merge --ff-only feat/phase-2-ai-chat` on `main`, pushed `main`, fetched and verified matching hashes. Created the refactor branch from updated main and pushed it with upstream tracking. `main`, `origin/main`, Phase 2 and the new local/remote branch all pointed at `e5393e5a408b372a5845beecd632164691e77403`. No branch deletion, history rewrite, migration or deployment occurred. At that stage this document was an uncommitted R0 deliverable; it was subsequently committed as `1d97c03`.
 
 ## 2. Current styling architecture
 
@@ -206,7 +206,7 @@ No new hook, state layer, observer, third-party scroller, component split or DOM
 | R1    | Token aliases/source scanning and shared Button/Input/Textarea/Label styling implemented and reviewed.           | `76fd399`, `f947b9c`                                  |
 | R2    | Shell, workspace, collections, forms/editor, login and status presentation implemented and reviewed.             | `07ba2e2`                                             |
 | R3    | Chat presentation, composer/recovery and remaining legacy shared selectors migrated and reviewed.                | `1628ea0`                                             |
-| R4    | Final selector/consumer, cascade, compiler and complete branch-diff audits complete; documentation-only closure. | This uncommitted update; final PM acceptance pending. |
+| R4    | Final selector/consumer, cascade, compiler and complete branch-diff audits complete; documentation-only closure. | `06edd17`; included in current `main`. |
 
 Preflight found a clean tree on `refactor/web-tailwind-styling` at `1628ea05b101929c76791a146db971b63ce52b1a`. R1–R3 commits and local `main` (`e5393e5a408b372a5845beecd632164691e77403`) are ancestors. The complete `main...HEAD` diff contains **30 files**: 25 production TSX files, two existing test files, two stylesheets and this plan. AST comparison of all 25 production files permits only class ownership/CVA styling literals and the existing `cn`/`buttonVariants` styling imports, normalizing formatter whitespace/parentheses. Element hierarchy, non-class props, text, IDs, refs, handlers, state/effects, variant/size keys and defaults are unchanged. Both test diffs are additions only. No unexpected functional changes were found; no auth/authorization, API/action/service, schema/migration, transport/state/provider, dependency/lockfile or infrastructure paths changed.
 
@@ -255,11 +255,11 @@ Remaining overlap is intentional default/state/support layering, not competing l
 
 These are source/compiler/static-markup checks, **not browser computed-style or end-to-end proof**. No automated browser/screenshots, live Groq calls, database writes/migrations, commits, pushes, merges or deployments were performed. Earlier product/integration acceptance records are not revalidated by this styling audit.
 
-### Final PM acceptance and freeze criteria
+### Historical final PM acceptance and freeze criteria
 
 1. PM checks Workspace fixed desktop canvas/internal scroll, mobile natural flow/drawer, Escape/focus restoration/skip link, sticky headings, long/empty/paginated collections, full-width Project Form, left-aligned Note Editor and invalid/conflict/comparison presentation. Include login/loading/error/not-found framing.
 2. PM checks Chat's stationary desktop header/composer and independent message scroller; mobile sticky composer, keyboard and safe areas; both roles' alignment/widths; wrapping/local code scroll; history, statuses, recovery, Stop and existing navigation/scroll behavior. Verify the single composer focus border and visible button/link focus.
-3. Cover **760/761/768/1100px**, fine/coarse pointers, keyboard and reduced motion. PM review of R1–R3 is recorded separately from this still-pending final cross-screen browser acceptance.
+3. Cover **760/761/768/1100px**, fine/coarse pointers, keyboard and reduced motion. PM review of R1–R3 was recorded separately; this historical checklist does not establish a new cross-screen browser result.
 4. After PM acceptance and explicit commit/merge authorization, freeze this styling refactor. Reopen only for a specific future requirement or demonstrated defect, with a narrowly scoped fix and relevant checks—not another broad cleanup, abstraction pass or CSS line-count target.
 
-**Recommendation:** ready for final PM acceptance; merge remains gated on that acceptance and explicit authorization. No further styling refactor is recommended. `docs/DESIGN.md` remains version 2.0 and unchanged.
+**Current disposition:** refactor closure is committed and included in `main`; the historical merge gate above is no longer outstanding. No further styling refactor is recommended. `docs/DESIGN.md` remains version 2.0; this status synchronization does not alter its visual rules or revalidate historical browser acceptance.

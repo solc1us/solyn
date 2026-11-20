@@ -1,5 +1,7 @@
 # Ask Solyn — persistence, Groq streaming and confirmed AI note drafts
 
+**Current status:** Phase 3, including the P3.4B sign-out warning fix, is merged into `main` through PR #1 (`0ca0856`). Phase 2/P3.2 audit sections below preserve historical evidence and plans, not current merge gates. Live PostgreSQL write/concurrency, Groq tool and authenticated browser verification remain distinct from offline tests; retrieval/citations are not implemented.
+
 `server.ts` is the server-only persistence entry point. It supplies the existing database and a fresh Better Auth request session to `createChatService`. The factory is an internal offline-test seam, not an API accepting caller-supplied identity. Phase 2C adds one authenticated streaming route and a testable handler using Vercel AI SDK/Groq. Phase 2D adds the chat UI inside the existing workspace shell. P3.2 adds one schema-only `prepareNote` tool and a durable editable draft preview. P3.3 adds explicit user confirmation through the workspace service, with atomic note/receipt creation and idempotent replay; the model still has no note-writing capability or retrieval. Response completion/failure callbacks remain internal server operations, never client-controlled assistant-content writes.
 
 ## Operations and contracts
@@ -139,7 +141,7 @@ See [the durable proposal contract](../../../../../docs/NOTE_PROPOSALS.md) for t
 
 Transport validates source message, conversation and turn identity for finish/replay/history. Partial tool arguments never become a preview. EOF/lost acknowledgement reads the original proposal without a new inference; if the read fails, existing reconciliation blocking applies. `getNoteProposal` supports a bounded authorized read by identity without writes or repairs.
 
-New offline tests cover proposal SQL routing, owner/session denial, atomic rollback requests and commit ambiguity, deadline/date/scope checks, exact replay/history, real SDK tool validation/Stop and a mocked-HTTP Groq tool stream, DTO identity checks, local edits/reload and escaped SSR preview markup. They do not prove actual PostgreSQL rollback/locks/constraints, live Groq support, mounted browser interactions or responsive acceptance. Manual QA should cover tool-only/text+tool drafts, nullable dates, owned-project paging/session expiry, warning cancellation/sign-out/reload and the preserved desktop/mobile boundaries. P3.2 offline review was accepted before P3.3 implementation. Stop for PM review before P3.4.
+New offline tests cover proposal SQL routing, owner/session denial, atomic rollback requests and commit ambiguity, deadline/date/scope checks, exact replay/history, real SDK tool validation/Stop and a mocked-HTTP Groq tool stream, DTO identity checks, local edits/reload and escaped SSR preview markup. They do not prove actual PostgreSQL rollback/locks/constraints, live Groq support, mounted browser interactions or responsive acceptance. Deferred live QA includes tool-only/text+tool drafts, nullable dates, owned-project paging/session expiry, warning cancellation/sign-out/reload and desktop/mobile boundaries. P3.2 offline review preceded the now-merged P3.3 implementation; this is no longer a pre-P3.4 merge gate.
 
 ## P3.3 explicit confirmation and uncertain-save recovery
 
@@ -151,4 +153,6 @@ UNAVAILABLE, a thrown action or malformed acknowledgement is not proof of rollba
 
 Confirmed receipts are monotonic within the view and cannot be replaced by an older proposed history/RSC/recovery response. History receipts on document reload recover server truth; local edits/pending-operation memory are not browser-persisted. Existing chat turn/replay/Stop/deadline behavior and the meaning of stream `finish.persisted` are unchanged.
 
-Offline tests cover canonical edited input, explicit general-project selection, double clicks, safe errors, lost acknowledgement/read failure, frozen-payload retry, malformed/foreign-source receipts, late stale responses, reload and SSR saved-state controls. Browser/mobile, real PostgreSQL concurrency/rollback and live Groq checks are deliberately deferred to P3.4, not claimed by these tests.
+Offline tests cover canonical edited input, explicit general-project selection, double clicks, safe errors, lost acknowledgement/read failure, frozen-payload retry, malformed/foreign-source receipts, late stale responses, reload and SSR saved-state controls. Real PostgreSQL concurrency/rollback, live Groq tools and authenticated browser/mobile checks remain deferred, not established by these tests.
+
+The merged P3.4B fix (`6c24c1e`) marks the always-rendered composer with session-level unsaved state. Sign-out therefore warns even when an unresolved proposal is outside the current history page. Its regression test covers retained payload/dirty state and composer wiring; see the root README for the current fixture typecheck blocker.

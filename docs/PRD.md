@@ -121,7 +121,7 @@ Pengguna mengerjakan beberapa project secara paralel. Informasi penting tersebar
 
 1. Pengguna menulis, misalnya: “Catet buat RESORA, absensi QR diprioritaskan dan permission masih perlu diskusi.”
 2. AI mengidentifikasi intent penyimpanan dan menyiapkan draft terstruktur.
-3. Backend memvalidasi schema dan memastikan target project milik pengguna.
+3. Backend memvalidasi schema dan scope. Pada project chat, target tetap project asal yang dimiliki pengguna; pada general chat, pengguna memilih project miliknya secara eksplisit di preview sebelum konfirmasi. Hint nama dari AI tidak otomatis memilih project.
 4. Bila informasi esensial ambigu, AI meminta klarifikasi melalui chat; bila tidak esensial, sistem menggunakan nilai opsional/default yang aman.
 5. UI menampilkan preview draft yang dapat dikoreksi.
 6. Pengguna mengonfirmasi melalui aksi yang eksplisit.
@@ -187,13 +187,13 @@ Pengguna tetap dapat membaca project, melihat daftar/detail catatan, mengedit, d
 
 | Layer              | Rekomendasi                                       | Status                                             |
 | ------------------ | ------------------------------------------------- | -------------------------------------------------- |
-| Aplikasi FE + BE   | Next.js Fullstack + TypeScript                    | Rekomendasi disepakati secara konsep               |
-| Styling/komponen   | Tailwind CSS + shadcn/ui                          | Usulan                                             |
-| Auth               | Better Auth                                       | Usulan                                             |
-| ORM                | Drizzle ORM                                       | Usulan                                             |
-| Database utama     | Supabase PostgreSQL                               | Usulan                                             |
-| LLM                | Provider API yang mendukung tool calling          | Provider belum dipilih                             |
-| Integrasi LLM      | AI SDK atau implementasi SDK provider yang setara | Pilihan implementasi belum final                   |
+| Aplikasi FE + BE   | Next.js Fullstack + TypeScript                    | Diimplementasikan dalam Bun workspace             |
+| Styling/komponen   | Tailwind CSS + shared shadcn-style/Base UI        | Diimplementasikan; arah visual di `DESIGN.md`       |
+| Auth               | Better Auth                                       | Diimplementasikan; registrasi publik dinonaktifkan |
+| ORM                | Drizzle ORM                                       | Diimplementasikan                                  |
+| Database utama     | Supabase PostgreSQL                               | Diimplementasikan                                  |
+| LLM                | Groq — `openai/gpt-oss-120b`                       | Dipakai oleh chat dan persiapan draft              |
+| Integrasi LLM      | Vercel AI SDK + adapter Groq                       | Diimplementasikan                                  |
 | Retrieval awal     | PostgreSQL full-text/keyword + filter project     | Rekomendasi MVP                                    |
 | Semantic retrieval | Embeddings + pgvector                             | Tambahan bertahap bila diperlukan                  |
 | Deployment         | Docker + VPS                                      | Opsi familiar; belum diputuskan untuk aplikasi ini |
@@ -210,6 +210,8 @@ Pengguna tetap dapat membaca project, melihat daftar/detail catatan, mengedit, d
 - **Retrieval:** menggunakan query yang dikendalikan server, bukan SQL bebas hasil generasi model.
 
 ### 10.3 Tool kontrak konseptual
+
+**Status implementasi Phase 3:** model hanya menerima `prepareNote` berbasis schema, tanpa `execute`. Backend memvalidasi dan mempersistenkan proposal; konfirmasi note dilakukan melalui authenticated Server Action `confirmNoteProposal`, bukan tool `saveNote` milik model. `listProjects`/`getNote` tersedia untuk UI melalui backend, tetapi tidak diberikan ke model. `searchNotes`, retrieval dan citations belum diimplementasikan. Tabel berikut mempertahankan kontrak konseptual MVP, bukan daftar tools yang saat ini tersedia untuk LLM.
 
 | Tool           | Hak      | Keterangan                                                                          |
 | -------------- | -------- | ----------------------------------------------------------------------------------- |
@@ -230,7 +232,7 @@ Contoh draft yang diproduksi AI (ilustrasi, bukan API final):
 }
 ```
 
-Backend menyelesaikan project identifier dengan memeriksa kepemilikan, mengambil user identifier dari session, dan menghasilkan identifier catatan di server. LLM **tidak** menerima operasi seperti `executeSQL`.
+Pada implementasi saat ini, AI memberi `projectHint` nullable, bukan project identifier; pengguna memilih target general chat secara eksplisit, sedangkan project chat mempertahankan scope asal. Backend memeriksa kepemilikan, mengambil user identifier dari session, dan menghasilkan identifier catatan di server. LLM **tidak** menerima operasi seperti `executeSQL`.
 
 ### 10.4 Alur write
 
@@ -256,7 +258,7 @@ sequenceDiagram
   API-->>UI: Status sukses + link catatan
 ```
 
-**Pengamanan draft:** gunakan draft identifier dan status yang dikendalikan server (atau mekanisme ekuivalen yang aman); jangan menerima `confirmed: true` yang hanya diusulkan oleh model sebagai bukti persetujuan pengguna. Tentukan idempotency/anti-duplikasi pada saat desain endpoint write.
+**Pengamanan draft:** gunakan draft identifier dan status yang dikendalikan server (atau mekanisme ekuivalen yang aman); jangan menerima `confirmed: true` yang hanya diusulkan oleh model sebagai bukti persetujuan pengguna. Phase 3 menggunakan proposal ID sebagai identitas operasi dan receipt immutable untuk replay idempotent; kontrak teknis ada di `NOTE_PROPOSALS.md`.
 
 ### 10.5 Alur read
 
@@ -294,7 +296,9 @@ MVP dimulai dari pencarian teks dan metadata (project, judul, konten, tanggal) d
 
 **Aturan isolasi:** seluruh akses notes diturunkan dari kepemilikan project atau mekanisme otorisasi setara, dan seluruh chat dari user pemilik. Jangan mempercayai `userId` yang dikirim LLM/client. Validasi kepemilikan tetap harus dilakukan pada akses langsung maupun tool AI.
 
-**Belum diputuskan:** skema fisik, indexing, revisi notes, soft/hard deletion, retention, dan granularitas penyimpanan tool calls. Ini memerlukan desain teknis dan review sebelum migrasi skema.
+**Status implementasi:** skema fisik dan index minimum sudah tersedia di `packages/db/src/schema`. Entitas chat fisik adalah `chat_conversations` dan `chat_messages` (bukan tabel `chat_sessions`). `note_revisions` menyimpan snapshot versi keluar pada edit bermakna secara atomik; `note_proposals` menyimpan draft asli dan receipt konfirmasi terpisah. Fragmen tool mentah tidak menjadi knowledge atau log tool umum. `note_chunks`/embeddings belum dibuat.
+
+**Masih terbuka:** kebijakan penghapusan/retensi final dan kebutuhan penyimpanan tool tambahan di fase berikutnya. MVP saat ini mempertahankan notes/history/proposals tanpa endpoint delete atau expiry; perubahan memerlukan review sebelum migrasi.
 
 ## 12. Non-functional requirements
 
@@ -363,16 +367,23 @@ MVP dimulai dari pencarian teks dan metadata (project, judul, konten, tanggal) d
 - MVP dipakai satu orang, tetapi **fondasi akun multi-user** disiapkan.
 - Integrasi Google Calendar tidak wajib.
 
-### 16.2 Perlu diputuskan sebelum implementasi relevan
+### 16.2 Keputusan implementasi terselesaikan dan yang masih terbuka
 
-1. Nama final produk dan identitas visual.
-2. Provider/model LLM, model harga, kebijakan data, dan kebutuhan API key.
-3. Detail authentication/onboarding satu akun (misalnya akun di-seed secara aman atau undangan admin).
-4. Apakah chat generik dapat berjalan tanpa project aktif dan bagaimana scope project dipilih.
-5. Kebijakan penghapusan dan retensi catatan/chat serta strategi versioning.
-6. Apakah semantic search diperlukan di MVP berdasarkan data uji, atau cukup full-text terlebih dulu.
-7. Tempat deployment dan kontrol biaya/backup.
-8. Definisi tenant serta collaborative sharing **hanya jika** fase SaaS benar-benar disetujui.
+**Sudah terselesaikan oleh implementasi Phase 1–3:**
+
+- Nama Solyn dan baseline visual v2.0 tersedia di `DESIGN.md`; penerimaan visual tetap milik PM.
+- Chat memakai Groq, `openai/gpt-oss-120b` dan Vercel AI SDK dengan API key server-side serta batas konteks/output/timeout.
+- Better Auth, provisioning owner terkendali dan penolakan registrasi publik sudah tersedia.
+- General chat tidak memerlukan project aktif; target note dipilih eksplisit sebelum konfirmasi. Project chat mempertahankan scope asal.
+- Edit note bermakna mengarsipkan versi keluar secara atomik; konfirmasi proposal memakai receipt idempotent.
+
+**Masih terbuka sebelum implementasi/operasi yang relevan:**
+
+1. Evaluasi biaya/harga provider, kebijakan pemrosesan data dan kontrol biaya operasional jangka panjang.
+2. Kebijakan penghapusan dan retensi final catatan/chat/proposal.
+3. Apakah semantic search diperlukan berdasarkan data uji, atau cukup PostgreSQL full-text/keyword terlebih dahulu; retrieval belum diimplementasikan.
+4. Tempat deployment dan kebijakan backup/restore.
+5. Definisi tenant serta collaborative sharing **hanya jika** fase SaaS benar-benar disetujui.
 
 ## 17. Kriteria selesai Fase A
 
