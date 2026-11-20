@@ -49,7 +49,7 @@ Use broader local checks for auth/ownership, persistence/recovery, schema or cro
 
 The initial workflow omits production build: a credentials-free build has not been established; Next.js loads required runtime configuration and downloads Google fonts. Use `bun run --filter web build` in an appropriately configured local environment. Do not weaken validation or add real CI credentials merely to make it pass. Offline tests/builds do not establish live PostgreSQL concurrency, provider compatibility or authenticated browser acceptance.
 
-**Known baseline blockers at `0ca0856`:** a clean Windows/Bun 1.3.13 frozen install rejects the existing lockfile, and `client.test.tsx`'s off-page-save fixture lacks required message metadata, failing typecheck. These need separate dependency/test fixes; CI keeps both checks strict. No remote Actions result is claimed.
+**Windows install note:** use the canonical checkout path rather than a Windows 8.3 short-path alias. Bun 1.3.13 can miscompute workspace paths through those aliases; a clean frozen install succeeds with the unchanged lockfile from the canonical path. No remote Actions result is claimed.
 
 Formatting is separate:
 

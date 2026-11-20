@@ -25,4 +25,4 @@ jobs:
       - name: Lint (non-mutating)
         run: bunx oxlint
       # No runtime credentials/services. Build remains a configured local check;
-      # see README for the offline-build boundary and existing baseline blockers.
+      # see README for the offline-build boundary.

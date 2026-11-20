@@ -155,4 +155,4 @@ Confirmed receipts are monotonic within the view and cannot be replaced by an ol
 
 Offline tests cover canonical edited input, explicit general-project selection, double clicks, safe errors, lost acknowledgement/read failure, frozen-payload retry, malformed/foreign-source receipts, late stale responses, reload and SSR saved-state controls. Real PostgreSQL concurrency/rollback, live Groq tools and authenticated browser/mobile checks remain deferred, not established by these tests.
 
-The merged P3.4B fix (`6c24c1e`) marks the always-rendered composer with session-level unsaved state. Sign-out therefore warns even when an unresolved proposal is outside the current history page. Its regression test covers retained payload/dirty state and composer wiring; see the root README for the current fixture typecheck blocker.
+The merged P3.4B fix (`6c24c1e`) marks the always-rendered composer with session-level unsaved state. Sign-out therefore warns even when an unresolved proposal is outside the current history page. Its regression test covers retained payload/dirty state and composer wiring; the fixture includes the metadata required by the history DTO.
