@@ -992,7 +992,7 @@ test("proposal completion commits assistant, one original draft and activity in 
   assert.equal(result.proposal.receipt, null);
   assert.equal(result.proposal.scopedProject, null);
   assert.match(f.calls[0]!, /read committed/);
-  assert.ok(!f.calls.some((sql) => /^insert into "notes"/.test(sql)));
+  assert.ok(!f.calls.some((sql) => sql.startsWith('insert into "notes"')));
   exhausted(f);
 });
 

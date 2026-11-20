@@ -8,8 +8,13 @@ import Link from "next/link";
 import { useState } from "react";
 
 import type { listProposalProjects } from "./actions";
-import { originalProposalEdit, proposalEditDirty, type ProposalEdit } from "./client-state";
-import { prepareNoteInput, type ProposalView } from "./contracts";
+import {
+  originalProposalEdit,
+  proposalEditDirty,
+  type ProposalEdit,
+  type ProposalSave,
+} from "./client-state";
+import { confirmNoteProposalInput, type ProposalView } from "./contracts";
 import { issueMessages, safeIssue, type Issue } from "./transport";
 
 export function ProposalPreview({
@@ -17,13 +22,22 @@ export function ProposalPreview({
   edit,
   change,
   loadProjects,
+  saveState,
+  save,
+  recover,
 }: {
   proposal: ProposalView;
   edit?: ProposalEdit;
   change: (patch: Partial<ProposalEdit>) => void;
   loadProjects: typeof listProposalProjects;
+  saveState?: ProposalSave;
+  save?: () => void;
+  recover?: () => void;
 }) {
-  const value = edit ?? originalProposalEdit(proposal);
+  const locked = !!saveState && saveState.phase !== "error";
+  const value = locked
+    ? { ...saveState.payload, noteDate: saveState.payload.noteDate ?? "" }
+    : (edit ?? originalProposalEdit(proposal));
   const dirty = proposalEditDirty(proposal, edit);
   const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
   const [offset, setOffset] = useState(0);
@@ -51,8 +65,9 @@ export function ProposalPreview({
       setBusy(false);
     }
   }
-  const valid = prepareNoteInput.safeParse({
-    ...proposal.draft,
+  const valid = confirmNoteProposalInput.safeParse({
+    proposalId: proposal.id,
+    projectId: value.projectId,
     title: value.title,
     content: value.content,
     noteDate: value.noteDate || null,
@@ -77,11 +92,13 @@ export function ProposalPreview({
     <form
       className="mt-[16px] grid gap-[12px] rounded-[7px] border border-border bg-canvas p-[16px]"
       aria-label="Note draft preview"
-      data-unsaved={dirty ? "true" : "false"}
+      data-unsaved={dirty || locked ? "true" : "false"}
       onSubmit={(event) => event.preventDefault()}
     >
       <div>
-        <h3 className="text-[15px] font-medium">Note draft — not saved as a note</h3>
+        <h3 className="text-[15px] font-medium">
+          {locked ? "Note draft — save status unconfirmed" : "Note draft — not saved as a note"}
+        </h3>
         <p className="text-[12px] text-muted-foreground">
           Source:{" "}
           {proposal.scopedProject
@@ -91,7 +108,7 @@ export function ProposalPreview({
         </p>
         <p className="mt-[4px] text-[12px] text-muted-foreground">
           The original draft is saved in chat. Edits stay local; reload restores the original draft.
-          Note saving is not available yet.
+          Save note explicitly to create the project note.
         </p>
       </div>
       {proposal.scopedProject ? (
@@ -103,6 +120,7 @@ export function ProposalPreview({
             id={`${prefix}-project`}
             className="min-h-[36px] w-full rounded-[7px] border border-input bg-canvas px-[10px] text-[14px]"
             value={value.projectId}
+            disabled={locked}
             onChange={(event) => change({ projectId: event.target.value })}
           >
             <option value="">Select a project explicitly</option>
@@ -124,7 +142,7 @@ export function ProposalPreview({
             <Button
               type="button"
               variant="secondary"
-              disabled={busy || (loaded && !hasMore)}
+              disabled={locked || busy || (loaded && !hasMore)}
               onClick={() => load()}
             >
               {busy
@@ -139,7 +157,7 @@ export function ProposalPreview({
               <Button
                 type="button"
                 variant="secondary"
-                disabled={busy || offset - projects.length === 0}
+                disabled={locked || busy || offset - projects.length === 0}
                 onClick={() => load(Math.max(0, offset - projects.length - 50))}
               >
                 Previous project choices
@@ -171,6 +189,7 @@ export function ProposalPreview({
         <Input
           id={`${prefix}-title`}
           value={value.title}
+          disabled={locked}
           maxLength={300}
           onChange={(event) => change({ title: event.target.value })}
         />
@@ -182,6 +201,7 @@ export function ProposalPreview({
           className="min-h-[160px] resize-y"
           rows={6}
           value={value.content}
+          disabled={locked}
           maxLength={100_000}
           onChange={(event) => change({ content: event.target.value })}
         />
@@ -194,22 +214,73 @@ export function ProposalPreview({
           min="0001-01-01"
           max="9999-12-31"
           value={value.noteDate}
+          disabled={locked}
           onChange={(event) => change({ noteDate: event.target.value })}
         />
         <p className="text-[12px] text-muted-foreground">
           Leave blank if the historical date is unknown.
         </p>
       </div>
-      {!valid.success ? (
+      {!valid.success && (value.projectId || proposal.scopedProject) ? (
         <p role="alert" className="text-[13px] text-destructive">
           Check the title, nonblank content and calendar date. Text cannot contain invalid Unicode
           or NUL.
         </p>
       ) : null}
+      {saveState ? (
+        <div role="status" className="text-[13px]">
+          {saveState.phase === "saving"
+            ? "Saving note…"
+            : saveState.phase === "checking"
+              ? "Save unconfirmed — checking saved status…"
+              : saveState.phase === "retry"
+                ? "Save unconfirmed. Not confirmed by the last read; retry only the same submitted fields."
+                : saveState.phase === "uncertain"
+                  ? "Save unconfirmed. Check saved status before retrying."
+                  : "The note save was not completed."}
+          {saveState.issue ? (
+            <p role="alert">
+              {issueMessages[saveState.issue]}{" "}
+              {saveState.issue === "UNAUTHENTICATED" ? (
+                <Link href="/login" target="_blank" rel="noopener noreferrer" className="underline">
+                  Sign in in a new tab
+                </Link>
+              ) : null}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+      <div className="flex flex-wrap gap-[8px]">
+        {saveState?.phase !== "uncertain" ? (
+          <Button
+            type="button"
+            disabled={!save || !valid.success || (locked && saveState?.phase !== "retry")}
+            onClick={save}
+          >
+            {saveState?.phase === "saving"
+              ? "Saving note…"
+              : saveState?.phase === "retry"
+                ? "Retry same save"
+                : "Save note"}
+          </Button>
+        ) : null}
+        {saveState && saveState.phase !== "saving" ? (
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={!recover || saveState.phase === "checking"}
+            onClick={recover}
+          >
+            Check saved status
+          </Button>
+        ) : null}
+      </div>
       <p role="status" className="text-[12px] text-muted-foreground">
-        {dirty
-          ? "Local changes — not saved. Reload will discard these edits."
-          : "Original persisted draft. No note has been created."}
+        {saveState
+          ? "Submitted fields retained locally; check saved status before changing or retrying an uncertain save."
+          : dirty
+            ? "Local changes — not saved. Reload will discard these edits."
+            : "Original persisted draft. No note has been created."}
       </p>
     </form>
   );

@@ -46,6 +46,14 @@ export async function createNote(input: unknown) {
   }
   return result;
 }
+export async function confirmNoteProposal(input: unknown) {
+  const result = await workspace.confirmNoteProposal(input);
+  if (result.ok) {
+    refreshProjectViews(result.data.projectId);
+    revalidatePath(result.data.href);
+  }
+  return result;
+}
 export async function updateNote(input: unknown) {
   const result = await workspace.updateNote(input);
   if (result.ok) {

@@ -90,10 +90,14 @@ function fixture(
     fetch?: (attempt: Attempt, signal: AbortSignal) => Promise<Response>;
     read?: Dependencies["read"];
     create?: Dependencies["create"];
+    confirm?: Dependencies["confirm"];
+    recoverProposal?: Dependencies["recoverProposal"];
   } = {},
 ) {
   const sent: Attempt[] = [];
   const creates: unknown[] = [];
+  const confirms: unknown[] = [];
+  const recoveries: unknown[] = [];
   const reads: unknown[] = [];
   const created: string[] = [];
   let ids = 0;
@@ -124,6 +128,14 @@ function fixture(
       create: async (input) => {
         creates.push(input);
         return options.create ? options.create(input) : ok(metadata);
+      },
+      confirm: async (input) => {
+        confirms.push(input);
+        return options.confirm ? options.confirm(input) : unavailable();
+      },
+      recoverProposal: async (input) => {
+        recoveries.push(input);
+        return options.recoverProposal ? options.recoverProposal(input) : unavailable();
       },
       read: async (input) => {
         reads.push(input);
@@ -162,6 +174,8 @@ function fixture(
   );
   return {
     session,
+    confirms,
+    recoveries,
     sent,
     creates,
     reads,
@@ -1072,7 +1086,7 @@ test("invalid proposal in history fails closed instead of mounting a foreign pre
   assert.deepEqual(f.session.getSnapshot().messages, []);
 });
 
-test("preview renders escaped editable original fields, nullable date and no save or confirmation action", () => {
+test("preview renders escaped editable fields and nullable date without implicit form submission", () => {
   let loads = 0;
   const markup = renderToStaticMarkup(
     <ProposalPreview
@@ -1116,4 +1130,246 @@ test("preview renders escaped editable original fields, nullable date and no sav
   );
   assert.match(scoped, /Project: Owned project/);
   assert.doesNotMatch(scoped, /<select/);
+});
+
+const savedNoteId = "55555555-5555-4555-8555-555555555555";
+const savedProposal: ProposalView = {
+  ...proposal,
+  status: "confirmed",
+  receipt: { noteId: savedNoteId, projectId, href: `/projects/${projectId}/notes/${savedNoteId}` },
+};
+const savedReceipt = { proposalId: proposal.id, ...savedProposal.receipt!, replayed: false };
+function savedProposalView(): ChatView {
+  const view = proposalView();
+  return {
+    ...view,
+    messages: view.messages.map((m) => ({ ...m, proposal: m.proposal ? savedProposal : null })),
+  };
+}
+
+test("explicit confirmation uses canonical edited fields and synchronously blocks double clicks and edits while saving", async () => {
+  let release!: (result: Awaited<ReturnType<NonNullable<Dependencies["confirm"]>>>) => void;
+  const pending = new Promise<Awaited<ReturnType<NonNullable<Dependencies["confirm"]>>>>(
+    (resolve) => {
+      release = resolve;
+    },
+  );
+  const f = fixture({ existing: true, initial: ok(proposalView()), confirm: async () => pending });
+  await f.session.confirmProposal(proposal.id); // General hint never selects the target.
+  assert.equal(f.confirms.length, 0);
+  f.session.editProposal(proposal.id, {
+    projectId,
+    title: "  Edited title  ",
+    content: "  User content\n",
+    noteDate: "2024-02-29",
+  });
+  const saving = f.session.confirmProposal(proposal.id);
+  await f.session.confirmProposal(proposal.id);
+  assert.deepEqual(f.confirms, [
+    {
+      proposalId: proposal.id,
+      projectId,
+      title: "Edited title",
+      content: "  User content\n",
+      noteDate: "2024-02-29",
+    },
+  ]);
+  assert.equal(f.session.getSnapshot().proposalSaves[proposal.id]!.phase, "saving");
+  assert.equal(f.session.getSnapshot().proposalReceipts[proposal.id], undefined);
+  f.session.editProposal(proposal.id, { content: "Must not replace submitted payload" });
+  release(ok(savedReceipt));
+  await saving;
+  assert.equal(f.session.getSnapshot().messages.at(-1)!.proposal!.status, "confirmed");
+  assert.deepEqual(f.session.getSnapshot().proposalEdits, {});
+  assert.equal(f.session.hasProposalChanges, false);
+  await f.session.confirmProposal(proposal.id);
+  assert.equal(f.confirms.length, 1);
+  assert.deepEqual(f.sent, []);
+  assert.deepEqual(f.creates, []);
+  assert.deepEqual(f.recoveries, []);
+});
+
+test("lost acknowledgement recovers only an authorized matching receipt, never automatically resubmits", async () => {
+  const f = fixture({
+    existing: true,
+    initial: ok(proposalView()),
+    confirm: async () => {
+      throw new Error("private network sentinel");
+    },
+    recoverProposal: async () => ok(savedProposal),
+  });
+  f.session.editProposal(proposal.id, { projectId });
+  await f.session.confirmProposal(proposal.id);
+  assert.equal(f.confirms.length, 1);
+  assert.deepEqual(f.recoveries, [{ proposalId: proposal.id }]);
+  assert.equal(f.session.getSnapshot().proposalReceipts[proposal.id]!.receipt!.noteId, savedNoteId);
+  assert.deepEqual(f.session.getSnapshot().proposalSaves, {});
+});
+
+test("still-proposed recovery freezes the exact submitted payload and permits only explicit same-payload retry", async () => {
+  let calls = 0;
+  const view = proposalView();
+  const f = fixture({
+    existing: true,
+    initial: ok(view),
+    read: async () => ok(view),
+    confirm: async () => (++calls === 1 ? unavailable() : ok({ ...savedReceipt, replayed: true })),
+    recoverProposal: async () => ok(proposal),
+  });
+  f.session.editProposal(proposal.id, { projectId, title: "  Frozen title  " });
+  await f.session.confirmProposal(proposal.id);
+  assert.equal(f.confirms.length, 1);
+  assert.equal(f.session.getSnapshot().proposalSaves[proposal.id]!.phase, "retry");
+  f.session.editProposal(proposal.id, { title: "Cannot change an unresolved write" });
+  await f.session.reload(); // Does not discard the unresolved operation identity/payload.
+  await f.session.confirmProposal(proposal.id);
+  assert.equal(f.confirms.length, 2);
+  assert.deepEqual(f.confirms[0], f.confirms[1]);
+  assert.equal(f.session.getSnapshot().proposalReceipts[proposal.id]!.status, "confirmed");
+});
+
+test("failed recovery retains Save unconfirmed, blocks writes and allows another explicit read", async () => {
+  let reads = 0;
+  const f = fixture({
+    existing: true,
+    initial: ok(proposalView()),
+    confirm: async () => unavailable(),
+    recoverProposal: async () => (++reads === 1 ? unavailable() : ok(savedProposal)),
+  });
+  f.session.editProposal(proposal.id, { projectId });
+  await f.session.confirmProposal(proposal.id);
+  assert.equal(f.session.getSnapshot().proposalSaves[proposal.id]!.phase, "uncertain");
+  assert.equal(f.session.hasProposalChanges, true);
+  await f.session.confirmProposal(proposal.id);
+  assert.equal(f.confirms.length, 1);
+  await f.session.recoverProposal(proposal.id);
+  assert.equal(f.recoveries.length, 2);
+  assert.equal(f.session.getSnapshot().proposalReceipts[proposal.id]!.status, "confirmed");
+});
+
+for (const code of ["UNAUTHENTICATED", "NOT_FOUND", "CONFLICT", "INVALID_INPUT"] as const)
+  test(`definite confirmation ${code} never fabricates success or automatically retries`, async () => {
+    const f = fixture({
+      existing: true,
+      initial: ok(proposalView()),
+      confirm: async () => ({ ok: false, error: { code, message: "private sentinel" } }),
+    });
+    f.session.editProposal(proposal.id, { projectId });
+    await f.session.confirmProposal(proposal.id);
+    assert.equal(f.session.getSnapshot().proposalSaves[proposal.id]!.issue, code);
+    assert.equal(f.session.getSnapshot().proposalReceipts[proposal.id], undefined);
+    assert.deepEqual(f.recoveries, []);
+    assert.equal(f.confirms.length, 1);
+  });
+
+test("a session-denied retry cannot unlock the payload of an earlier uncertain save", async () => {
+  let writes = 0,
+    reads = 0;
+  const f = fixture({
+    existing: true,
+    initial: ok(proposalView()),
+    confirm: async () =>
+      ++writes === 1
+        ? unavailable()
+        : { ok: false, error: { code: "UNAUTHENTICATED", message: "safe" } },
+    recoverProposal: async () =>
+      ++reads === 1
+        ? ok(proposal)
+        : { ok: false, error: { code: "UNAUTHENTICATED", message: "safe" } },
+  });
+  f.session.editProposal(proposal.id, { projectId, title: "Frozen" });
+  await f.session.confirmProposal(proposal.id);
+  await f.session.confirmProposal(proposal.id);
+  assert.equal(f.session.getSnapshot().proposalSaves[proposal.id]!.phase, "uncertain");
+  f.session.editProposal(proposal.id, { title: "Must not change" });
+  assert.equal(f.session.getSnapshot().proposalSaves[proposal.id]!.payload.title, "Frozen");
+  await f.session.confirmProposal(proposal.id);
+  assert.equal(f.confirms.length, 2);
+});
+
+test("malformed save acknowledgement and foreign-source recovery remain unconfirmed", async () => {
+  const f = fixture({
+    existing: true,
+    initial: ok(proposalView()),
+    confirm: async () => ok({ ...savedReceipt, href: "javascript:alert(1)" }),
+    recoverProposal: async () => ok({ ...savedProposal, sourceMessageId: projectId }),
+  });
+  f.session.editProposal(proposal.id, { projectId });
+  await f.session.confirmProposal(proposal.id);
+  assert.equal(f.session.getSnapshot().proposalReceipts[proposal.id], undefined);
+  assert.equal(f.session.getSnapshot().proposalSaves[proposal.id]!.phase, "uncertain");
+  assert.equal(f.confirms.length, 1);
+});
+
+test("newly confirmed receipts survive stale history/RSC responses and late proposed recovery", async () => {
+  let release!: (result: Awaited<ReturnType<NonNullable<Dependencies["recoverProposal"]>>>) => void;
+  const pending = new Promise<Awaited<ReturnType<NonNullable<Dependencies["recoverProposal"]>>>>(
+    (resolve) => {
+      release = resolve;
+    },
+  );
+  const f = fixture({
+    existing: true,
+    initial: ok(proposalView()),
+    read: async () => ok(proposalView()),
+    confirm: async () => unavailable(),
+    recoverProposal: async () => pending,
+  });
+  f.session.editProposal(proposal.id, { projectId });
+  const saving = f.session.confirmProposal(proposal.id);
+  await until(() => f.session.getSnapshot().proposalSaves[proposal.id]?.phase === "checking");
+  f.session.adopt(ok(savedProposalView()));
+  await until(() => !!f.session.getSnapshot().proposalReceipts[proposal.id]);
+  release(ok(proposal));
+  await saving;
+  f.session.adopt(ok(proposalView()));
+  await f.session.reload();
+  assert.equal(f.session.getSnapshot().messages.at(-1)!.proposal!.status, "confirmed");
+  assert.deepEqual(f.session.getSnapshot().proposalSaves, {});
+  const remounted = fixture({ existing: true, initial: ok(savedProposalView()) });
+  assert.equal(
+    remounted.session.getSnapshot().messages.at(-1)!.proposal!.receipt!.noteId,
+    savedNoteId,
+  );
+});
+
+test("confirmation markup shows explicit valid Save, disabled saving, uncertainty/recovery and verified receipt only", () => {
+  const edited = { projectId, title: "Ready", content: "Content", noteDate: "" };
+  const render = (props: Partial<Parameters<typeof ProposalPreview>[0]> = {}) =>
+    renderToStaticMarkup(
+      <ProposalPreview
+        proposal={proposal}
+        edit={edited}
+        change={() => {}}
+        loadProjects={async () => ok([])}
+        save={() => {}}
+        recover={() => {}}
+        {...props}
+      />,
+    );
+  const ready = render();
+  assert.match(ready, />Save note</);
+  assert.doesNotMatch(ready, /Note saved\./);
+  const payload = {
+    proposalId: proposal.id,
+    projectId,
+    title: "Ready",
+    content: "Content",
+    noteDate: null,
+  };
+  const saving = render({ saveState: { phase: "saving", proposal, payload, issue: null } });
+  assert.match(saving, /Saving note/);
+  assert.match(saving, /disabled=""/);
+  assert.doesNotMatch(saving, /Open saved note/);
+  const uncertain = render({
+    saveState: { phase: "uncertain", proposal, payload, issue: "UNAVAILABLE" },
+  });
+  assert.match(uncertain, /Save unconfirmed/);
+  assert.match(uncertain, /Check saved status/);
+  assert.doesNotMatch(uncertain, />Save note<|Note saved\.|No note has been created/);
+  const confirmed = render({ proposal: savedProposal });
+  assert.match(confirmed, /Note saved\./);
+  assert.match(confirmed, /Open saved note/);
+  assert.match(confirmed, new RegExp(`/projects/${projectId}/notes/${savedNoteId}`));
+  assert.doesNotMatch(confirmed, /<button|<form/);
 });

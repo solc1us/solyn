@@ -1,5 +1,13 @@
-import type { createConversation, getConversation } from "./actions";
-import { proposalViewSchema, streamTurnInput, type ProposalView } from "./contracts";
+import type { createConversation, getConversation, getNoteProposal } from "./actions";
+import type { confirmNoteProposal } from "../workspace/actions";
+import {
+  confirmNoteProposalInput,
+  confirmationReceiptSchema,
+  proposalViewSchema,
+  streamTurnInput,
+  type ConfirmNoteProposalInput,
+  type ProposalView,
+} from "./contracts";
 import {
   consumeChatResponse,
   proposalMatchesMessage,
@@ -25,6 +33,12 @@ export function originalProposalEdit(proposal: ProposalView): ProposalEdit {
 export function proposalEditDirty(proposal: ProposalView, edit?: ProposalEdit) {
   return !!edit && JSON.stringify(originalProposalEdit(proposal)) !== JSON.stringify(edit);
 }
+export type ProposalSave = {
+  phase: "saving" | "checking" | "uncertain" | "retry" | "error";
+  payload: ConfirmNoteProposalInput;
+  proposal: ProposalView;
+  issue: Issue | null;
+};
 export type SessionState = {
   conversation: ChatView["conversation"] | null;
   project: ProjectScope;
@@ -39,6 +53,8 @@ export type SessionState = {
   hasOlder: boolean;
   viewingOlder: boolean;
   proposalEdits: Record<string, ProposalEdit>;
+  proposalSaves: Record<string, ProposalSave>;
+  proposalReceipts: Record<string, ProposalView>;
 };
 export function shouldSend(event: {
   key: string;
@@ -102,6 +118,8 @@ export class ChatSession {
   constructor(
     private dependencies: {
       create: typeof createConversation;
+      confirm?: typeof confirmNoteProposal;
+      recoverProposal?: typeof getNoteProposal;
       read: typeof getConversation;
       fetch: typeof globalThis.fetch;
       uuid: () => string;
@@ -137,6 +155,12 @@ export class ChatSession {
       hasOlder: (view?.messages.length ?? 0) === 50,
       viewingOlder: false,
       proposalEdits: {},
+      proposalSaves: {},
+      proposalReceipts: Object.fromEntries(
+        initialMessages
+          .filter((m) => m.proposal?.status === "confirmed")
+          .map((m) => [m.proposal!.id, m.proposal!]),
+      ),
     };
   }
   getSnapshot = () => this.state;
@@ -147,13 +171,50 @@ export class ChatSession {
     };
   };
   private set(update: Partial<SessionState>) {
-    this.state = { ...this.state, ...update };
+    const receipts = { ...this.state.proposalReceipts, ...update.proposalReceipts };
+    const incoming = update.messages ?? (update.proposalReceipts ? this.state.messages : undefined);
+    if (incoming) {
+      for (const m of incoming)
+        if (m.proposal?.status === "confirmed") {
+          const prior = receipts[m.proposal.id];
+          if (prior && JSON.stringify(prior.receipt) !== JSON.stringify(m.proposal.receipt))
+            throw new TransportFailure("PROTOCOL");
+          receipts[m.proposal.id] = m.proposal;
+        }
+      update.messages = incoming.map((m) => {
+        const receipt = Object.values(receipts).find((p) => p.sourceMessageId === m.id);
+        if (!receipt) return m;
+        if (!proposalMatchesMessage(receipt, { ...m, status: "completed" }))
+          throw new TransportFailure("PROTOCOL");
+        return { ...m, proposal: receipt, status: "completed" as const, persisted: true };
+      });
+    }
+    // Explicit reload can clear edits; confirmed receipts always clear their edit
+    // and pending-operation state, even if an older RSC/history response arrives.
+    const nextEdits = { ...(update.proposalEdits ?? this.state.proposalEdits) };
+    const saves = { ...(update.proposalSaves ?? this.state.proposalSaves) };
+    for (const id of Object.keys(receipts)) {
+      delete nextEdits[id];
+      delete saves[id];
+    }
+    this.state = {
+      ...this.state,
+      ...update,
+      proposalEdits: nextEdits,
+      proposalSaves: saves,
+      proposalReceipts: receipts,
+    };
     for (const listener of this.listeners) listener();
   }
   setDraft(value: string) {
     this.set({ draft: value });
   }
   editProposal(id: string, patch: Partial<ProposalEdit>) {
+    if (
+      this.state.proposalReceipts[id] ||
+      (this.state.proposalSaves[id] && this.state.proposalSaves[id].phase !== "error")
+    )
+      return;
     const proposal = this.state.messages.find(
       (m) => m.persisted && m.proposal?.id === id,
     )?.proposal;
@@ -165,7 +226,115 @@ export class ChatSession {
     this.set({ proposalEdits: edits });
   }
   get hasProposalChanges() {
-    return Object.keys(this.state.proposalEdits).length > 0;
+    return (
+      Object.keys(this.state.proposalEdits).length > 0 ||
+      Object.values(this.state.proposalSaves).some((save) => save.phase !== "error")
+    );
+  }
+  private saveState(id: string, save: ProposalSave) {
+    if (!this.state.proposalReceipts[id])
+      this.set({ proposalSaves: { ...this.state.proposalSaves, [id]: save } });
+  }
+  private acceptConfirmed(value: ProposalView, expected: ProposalView) {
+    if (
+      value.id !== expected.id ||
+      value.sourceMessageId !== expected.sourceMessageId ||
+      value.conversationId !== expected.conversationId ||
+      value.turnId !== expected.turnId ||
+      value.status !== "confirmed" ||
+      !value.receipt
+    )
+      throw new TransportFailure("PROTOCOL");
+    this.set({ proposalReceipts: { ...this.state.proposalReceipts, [value.id]: value } });
+  }
+  async confirmProposal(id: string) {
+    if (this.state.proposalReceipts[id]) return;
+    const previous = this.state.proposalSaves[id];
+    if (previous && previous.phase !== "retry" && previous.phase !== "error") return;
+    const proposal =
+      this.state.messages.find(
+        (m) => m.persisted && m.status === "completed" && m.proposal?.id === id,
+      )?.proposal ?? previous?.proposal;
+    if (!proposal || proposal.status !== "proposed") return;
+    const edit = this.state.proposalEdits[id] ?? originalProposalEdit(proposal);
+    const parsed = confirmNoteProposalInput.safeParse({
+      proposalId: id,
+      projectId: edit.projectId,
+      title: edit.title,
+      content: edit.content,
+      noteDate: edit.noteDate || null,
+    });
+    if (!parsed.success && previous?.phase !== "retry") return;
+    const payload = previous?.phase === "retry" ? previous.payload : parsed.data!;
+    const save: ProposalSave = { phase: "saving", proposal, payload, issue: null };
+    this.saveState(id, save); // Synchronous guard, before the first await/double click.
+    try {
+      if (!this.dependencies.confirm) throw new TransportFailure("UNAVAILABLE");
+      const result = await this.dependencies.confirm(payload);
+      if (this.state.proposalReceipts[id]) return;
+      if (!result.ok) {
+        if (result.error.code === "UNAVAILABLE" || previous?.phase === "retry")
+          throw new TransportFailure("UNAVAILABLE");
+        this.saveState(id, { ...save, phase: "error", issue: safeIssue(result.error.code) });
+        return;
+      }
+      const receipt = confirmationReceiptSchema.parse(result.data);
+      if (receipt.proposalId !== id || receipt.projectId !== payload.projectId)
+        throw new TransportFailure("PROTOCOL");
+      this.acceptConfirmed(
+        {
+          ...proposal,
+          status: "confirmed",
+          receipt: { noteId: receipt.noteId, projectId: receipt.projectId, href: receipt.href },
+        },
+        proposal,
+      );
+    } catch {
+      if (this.state.proposalReceipts[id]) return;
+      this.saveState(id, { ...save, phase: "uncertain", issue: "UNAVAILABLE" });
+      await this.recoverProposal(id); // Read only; never automatically resubmit.
+    }
+  }
+  async recoverProposal(id: string) {
+    const save = this.state.proposalSaves[id];
+    if (
+      !save ||
+      save.phase === "saving" ||
+      save.phase === "checking" ||
+      this.state.proposalReceipts[id]
+    )
+      return;
+    this.saveState(id, { ...save, phase: "checking" });
+    try {
+      if (!this.dependencies.recoverProposal) throw new TransportFailure("UNAVAILABLE");
+      const result = await this.dependencies.recoverProposal({ proposalId: id });
+      if (this.state.proposalReceipts[id]) return;
+      if (!result.ok) {
+        this.saveState(id, { ...save, phase: "uncertain", issue: safeIssue(result.error.code) });
+        return;
+      }
+      const view = proposalViewSchema.parse(result.data);
+      if (
+        view.id !== id ||
+        !proposalMatchesMessage(view, {
+          id: save.proposal.sourceMessageId,
+          conversationId: save.proposal.conversationId,
+          turnId: save.proposal.turnId,
+          role: "assistant",
+          status: "completed",
+        })
+      )
+        throw new TransportFailure("PROTOCOL");
+      if (view.status === "confirmed") this.acceptConfirmed(view, save.proposal);
+      else
+        this.saveState(id, {
+          ...save,
+          phase: save.phase === "error" ? "error" : "retry",
+          issue: save.phase === "error" ? save.issue : null,
+        });
+    } catch {
+      this.saveState(id, { ...save, phase: "uncertain", issue: "UNAVAILABLE" });
+    }
   }
   get busy() {
     return this.state.phase !== "idle";

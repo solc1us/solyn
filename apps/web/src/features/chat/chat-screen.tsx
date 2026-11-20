@@ -16,6 +16,7 @@ import {
 } from "react";
 
 import * as actions from "./actions";
+import { confirmNoteProposal } from "../workspace/actions";
 import {
   ChatSession,
   ChatSessions,
@@ -139,6 +140,8 @@ export default function ChatScreen({
       const session = new ChatSession(
         {
           create: actions.createConversation,
+          confirm: confirmNoteProposal,
+          recoverProposal: actions.getNoteProposal,
           read: actions.getConversation,
           fetch: (...args) => fetch(...args),
           uuid: () => crypto.randomUUID(),
@@ -392,6 +395,13 @@ export default function ChatScreen({
                   key={message.proposal.id}
                   proposal={message.proposal}
                   loadProjects={actions.listProposalProjects}
+                  saveState={state.proposalSaves[message.proposal.id]}
+                  save={() =>
+                    startTransition(async () => session.confirmProposal(message.proposal!.id))
+                  }
+                  recover={() =>
+                    startTransition(async () => session.recoverProposal(message.proposal!.id))
+                  }
                   edit={state.proposalEdits[message.proposal.id]}
                   change={(patch) => session.editProposal(message.proposal!.id, patch)}
                 />

@@ -61,6 +61,23 @@ export const prepareNoteInput = z.strictObject({
   content: createNoteInput.shape.content.refine(isChatText),
   noteDate: createNoteInput.shape.noteDate.unwrap(),
 });
+export const confirmNoteProposalInput = z.strictObject({
+  proposalId: uuid,
+  projectId: uuid,
+  title: prepareNoteInput.shape.title,
+  content: prepareNoteInput.shape.content,
+  noteDate: prepareNoteInput.shape.noteDate,
+});
+export type ConfirmNoteProposalInput = z.infer<typeof confirmNoteProposalInput>;
+export const confirmationReceiptSchema = z
+  .strictObject({
+    proposalId: uuid,
+    noteId: uuid,
+    projectId: uuid,
+    href: z.string(),
+    replayed: z.boolean(),
+  })
+  .refine((value) => value.href === `/projects/${value.projectId}/notes/${value.noteId}`);
 export type NoteDraft = z.infer<typeof prepareNoteInput>;
 export const completeProposalInput = completeResponseInput.extend({ draft: prepareNoteInput });
 export const proposalViewSchema = z
