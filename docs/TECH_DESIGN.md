@@ -1,5 +1,7 @@
 # Solyn — Technical Design: Phase 1 (Foundation & Core Workspace)
 
+> **Historical Phase 1 design:** the audit, proposed changes and approval gates below describe the 17 November baseline, not the complete current implementation. Phase 1–3 code is now present and Phase 3 was merged through PR #1 (`0ca0856`). For current behaviour, consult the chat/workspace feature READMEs and `docs/NOTE_PROPOSALS.md`; use `docs/PRD.md` for product scope and `docs/DESIGN.md` for visual direction. Historical verification and migration warnings remain valid within their original scope; this document does not authorize new sensitive changes.
+
 **Status:** Draft untuk review PM; belum menjadi persetujuan perubahan auth atau migrasi database  
 **Tanggal:** 17 November 2026
 **Repository:** https://github.com/solc1us/solyn  

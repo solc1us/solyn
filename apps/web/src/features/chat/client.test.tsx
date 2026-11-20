@@ -1237,6 +1237,9 @@ test("off-page unresolved saves remain dirty and expose the session guard to sig
         ...message,
         id: crypto.randomUUID(),
         proposal: null,
+        modelId: message.role === "assistant" ? "test-model" : null,
+        createdAt: now,
+        updatedAt: now,
       })),
     ).flat(),
   };

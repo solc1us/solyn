@@ -1,8 +1,8 @@
 # Durable note proposals — P3.1 schema, P3.2 draft preview and P3.3 confirmation
 
-**Status: P3.3 implemented for PM review; live PostgreSQL/browser/Groq verification is deferred to P3.4.** PM approved continuing after the development migration approval, confirmed backend access and reconfirmed that the Supabase Data API is disabled. A bounded read-only P3.2 check independently found `public.note_proposals` on the guarded development target and verified backend SELECT/INSERT privileges. Data API disablement is accepted PM evidence, not an outstanding P3.2 blocker. The agent did not apply/reapply any migration or change permissions.
+**Status: Phase 3 implementation merged into `main` through PR #1 (`0ca0856`), including the P3.4B sign-out warning fix (`6c24c1e`).** The no-write tool, atomic assistant/proposal finalization, authorized finish/history/replay reads, editable preview and Section 6's explicit confirmation are implemented. Merge status does not establish live PostgreSQL write/concurrency, Groq tool compatibility or authenticated browser acceptance; these remain deferred verification.
 
-The no-write tool, atomic assistant/proposal finalization, authorized finish/history/replay reads, editable preview and Section 6's explicit confirmation are implemented. PM explicitly approved P3.3, including the private transaction-compatible workspace extraction. No authentication, TLS, role, grant, RLS, schema or dependency behavior is changed. Stop for PM review before P3.4.
+PM approved the development migration and backend access and reconfirmed that the Supabase Data API is disabled. The historical bounded P3.2 read-only check found `public.note_proposals` on the guarded development target and verified backend SELECT/INSERT privileges. This is not write/constraint testing. Data API disablement is accepted PM evidence, not an outstanding blocker. The implementation stages recorded below did not apply/reapply migrations or change authentication, TLS, roles, grants or RLS.
 
 Product basis: `PRD.md` UJ-02, FR-06/07/08/14. Current code wins over the historical Phase 1 design. Retain Next.js/Bun, Better Auth, Drizzle/PostgreSQL, existing Groq/AI SDK, workspace services and custom SSE. T1 TLS is complete and unchanged.
 
@@ -73,7 +73,7 @@ proposed --explicit authenticated confirmation + atomic note creation--> confirm
 
 ## 4. No-write `prepareNote` tool
 
-Proposed strict, complete arguments (all four keys required; no extra keys):
+Implemented strict, complete arguments (all four keys required; no extra keys):
 
 ```ts
 {
@@ -103,11 +103,11 @@ Keep `/api/chat/stream`, its strict existing request, same-origin/session bounda
 
 1. Confirm existing `beginTurn` commit before exactly one provider request; replay never calls the provider. No transaction spans provider work.
 2. Accumulate bounded tool arguments privately. Validate full arguments, finish reason, cardinality, source scope and safety before attempting persistence.
-3. Add a future **internal** proposal-completion branch beside `completeResponse`: fresh session; owned conversation `FOR UPDATE`; check pending assistant and existing ten-minute deadline; validate/resolve again; insert proposal referencing that assistant; mark assistant completed and touch activity **in one READ COMMITTED transaction**. Roll back all three on any error. No client-callable assistant/proposal insertion action.
+3. The implemented **internal** `completeProposal` branch beside `completeResponse` uses: fresh session; owned conversation `FOR UPDATE`; check pending assistant and existing ten-minute deadline; validate/resolve again; insert proposal referencing that assistant; mark assistant completed and touch activity **in one READ COMMITTED transaction**. Roll back all three on any error. No client-callable assistant/proposal insertion action.
 4. Tool-only completion uses deterministic nonempty assistant text: `Draft ready for review. No note has been saved.` Emit that as an ordinary text delta, then save it with the proposal atomically. Mixed text/tool responses retain safe visible text under existing limits; the proposal card, not model prose, supplies trusted saved-note state. Do not persist tool JSON as assistant text or require a second model call.
 5. Only after confirmed commit, extend existing `finish` with `proposal: ProposalView | null`. No new event is needed. Text-only finishes set null. Existing `persisted: true` still means chat finalization, **never note creation**. If finalization is unconfirmed, emit existing safe persistence failure, not a proposal identity/capability.
 
-Proposed DTO (only validated server reads/finalization responses may populate it):
+Implemented DTO (only validated server reads/finalization responses may populate it):
 
 ```ts
 type ProposalView = {
@@ -125,7 +125,7 @@ type ProposalView = {
 - Extend terminal JSON replay with the same `proposal` field (null for pending/failed/stopped/text-only); read it after acquiring the existing conversation lock, not from a stale pre-lock snapshot. A terminal proposal callback replay compares original source/draft, returns the existing proposal without insertion/timestamp changes, and never regresses an already-confirmed receipt.
 - Extend each history message DTO with `proposal: ProposalView | null`, fetched for that bounded page in the existing read-only REPEATABLE READ snapshot. Only assistant/completed rows can carry one; foreign/inconsistent relations fail closed. Do not load every proposal or leak approved content into unrelated history. No raw owner IDs or provider tool-call IDs are needed in DTOs.
 - Client validates identities against conversation, turn and assistant message ID; rejects duplicate/mismatched proposal receipts. No confirmation is enabled from text deltas/tool fragments. Current tool-only length requirement is satisfied by deterministic text. New DTO/event parsing must ship with server changes, not be silently ignored by old clients. A confirmed local receipt must not be downgraded by a route read started earlier; reconcile with a fresh read, as existing chat does for terminal state.
-- Add a small future authenticated `getNoteProposal({ proposalId })` read for exact recovery outside a visible history page. Same source/owner/scope checks and safe result union; it performs no repairs. A confirmed receipt is returned only while source and resulting project/note remain authorized.
+- The authenticated `getNoteProposal({ proposalId })` read supports exact recovery outside a visible history page. Same source/owner/scope checks and safe result union; it performs no repairs. A confirmed receipt is returned only while source and resulting project/note remain authorized.
 
 ### Stop, failures and process termination
 
@@ -137,7 +137,7 @@ type ProposalView = {
 
 ## 6. Explicit confirmation action and transaction
 
-Proposed strict input (no owner/status/time/assistant content/approved flag/revision key):
+Implemented strict input (no owner/status/time/assistant content/approved flag/revision key):
 
 ```ts
 {
@@ -185,12 +185,12 @@ Sources reviewed: [Supabase security guide](https://supabase.com/docs/guides/api
 Approval boundaries:
 
 1. P3.1 migration approval and P3.2 runtime/tool/transport/preview implementation are authorized by PM. The existing proposal table and backend access are independently observed. No migration execution is part of P3.2; do not blindly reapply the Phase 1 auth baseline or migration chain.
-2. P3.3 confirmation, private transaction-compatible workspace extraction, note insertion and receipt mutation were explicitly approved and implemented. **Stop for PM review before P3.4**; no real write/concurrency test, browser QA or live Groq call is included.
-3. Obtain separate approval for an exact disposable PostgreSQL target/setup/fixtures/cleanup before write tests of constraints, concurrent confirmations, lock scheduling, rollback, ambiguous commit and persisted two-user isolation. Live Groq smoke-test text/cost and browser actions that create records/sessions also need separate authorization.
+2. P3.3 confirmation, private transaction-compatible workspace extraction, note insertion and receipt mutation were explicitly approved and are now merged, together with the P3.4B warning fix. Historical offline evidence below is not live integration acceptance.
+3. Obtain separate approval for the exact non-production target, synthetic fixtures and cleanup before database write tests. Live Groq smoke-test text/cost and browser actions that create records/sessions also need separate authorization. Scope verification proportionally; the historical integration scenarios are not permission to execute them or a requirement to build new test infrastructure.
 
 Offline tests check metadata, source uniqueness prerequisites, receipt SQL structure, relations/ownership-query compilation, migration allowlist and snapshot consistency. P3.2 adds mocked service/transport/UI tests described below. They **do not prove** real PostgreSQL service enforcement, CHECK/FK enforcement, concurrency, rollback, process termination, live provider tool support or browser acceptance. Those checks cannot be completed merely by generating a migration, and are not permission to apply it.
 
-## 8. P3.1 verification evidence
+## 8. Historical P3.1 verification evidence
 
 - `bun test`: **185 passed, 0 failed**, 11 files (seven new proposal schema/migration tests).
 - `bun run check-types`: all four workspaces passed; `bunx oxlint`: exit 0.
@@ -208,7 +208,7 @@ Offline tests check metadata, source uniqueness prerequisites, receipt SQL struc
 - The preview reuses shared controls/Tailwind tokens, with title/content/nullable date edited only in per-view memory. General chat requires an explicit paginated owned-project choice; project chat displays fixed scope. At the P3.2 boundary there was no Save/Confirm action or persistence of edits; P3.3 extends the preview below. Dirty previews participate in the existing unsaved-change/sign-out guards; explicit history reload warns and discards edits only after a successful read. Automatic reconciliation preserves edits; a full document reload restores the original durable draft.
 - Read-only development check: independent target guard matched, transaction reported read-only, table existed, backend SELECT/INSERT privileges were true, and the client socket was encrypted/authorized using the existing CA. The first diagnostic omitted CA forwarding through Varlock and failed certificate validation; the successful rerun forwarded `NODE_EXTRA_CA_CERTS` without changing TLS configuration. As in T1, pooler-client TLS does **not** establish TLS on the pooler-to-PostgreSQL hop.
 - Focused offline tests cover SQL ownership/snapshots, fresh-session denial, source/date/scope/deadline rejection, atomic statement routing/rollback requests and ambiguous acknowledgements, exact proposal replay/history recovery, strict tool validation and Stop, a real Groq adapter with mocked HTTP, DTO identity rejection, local edits/reload and escaped server-rendered preview markup. They are not live PostgreSQL, Groq or mounted-browser evidence.
-- Manual QA still needed: project/global tool drafts, keyboard/mobile preview and nullable date fields, project pagination/session expiry, unsaved navigation cancellation/sign-out/reload and desktop 760/761px boundaries. No real provider call or database-write fixture is authorized/performed here. P3.2 offline review was accepted by PM before authorizing P3.3. Live QA remains deferred to P3.4.
+- Manual QA still needed: project/global tool drafts, keyboard/mobile preview and nullable date fields, project pagination/session expiry, unsaved navigation cancellation/sign-out/reload and desktop 760/761px boundaries. No real provider call or database-write fixture is authorized/performed here. P3.2 offline review was accepted by PM before authorizing P3.3. Live integration QA remains deferred; the historical P3.2 boundary does not describe the later P3.4B warning fix.
 
 ## 10. P3.3 confirmation, idempotency and recovery
 
@@ -219,5 +219,11 @@ Offline tests check metadata, source uniqueness prerequisites, receipt SQL struc
 - `ChatSession` retains the submitted canonical payload and proposal identity synchronously before the write; double clicks and edits are blocked during saving/uncertainty. Verified success becomes a monotonic per-view receipt, clears edits and removes Save. A network/malformed acknowledgement or UNAVAILABLE is **Save unconfirmed**, not rollback: a read-only `getNoteProposal` recovers a matching authorized receipt. Proposed reads permit only an explicit same-ID/same-payload retry, never an automatic write. Failed reads retain uncertainty and allow another read; even a rejected retry does not unlock the earlier uncertain payload. Definite validation/authorization errors remain editable, with an optional status read.
 - Preview fields freeze while an operation is unresolved; navigation/sign-out warnings also cover unresolved operations without field edits. A confirmed local receipt survives stale history/RSC/proposed recovery responses. A document reload uses server history and loses only local unsaved edits/operation memory; if still proposed, review again explicitly, with backend row-lock idempotency protecting any earlier in-flight confirmation.
 - Offline evidence includes real Drizzle SQL construction over scripted drivers, a deterministic proposal-lock/commit simulator for identical/different concurrent confirmations and lost acknowledgements, note-identity replay independent of mutable content, denial/rollback paths, state-machine double clicks/retries/recovery/stale receipts and SSR markup for pending/uncertain/confirmed controls. This is not real PostgreSQL lock/MVCC/rollback or mounted-browser proof.
-- Verification: `bun test` **251 passed, 0 failed across 12 files**; `bun run check-types`, `bunx oxlint` (no diagnostics), `bun run --filter web build`, changed-file `bunx oxfmt --check` and `git diff --check` passed. The existing Phase 3 regex lint warning was cleaned without an unrelated refactor. Initial test iterations exposed a simulator SQL-dispatch ordering mistake (note identity read matched its project subquery); that offline test harness was corrected before these final results.
-- P3.4 must separately verify real two-connection contention, constraints/atomic rollback, lost-ack recovery and later note edits using an explicitly approved disposable target/fixtures/cleanup; browser Save/double click, navigation/sign-out, general/scoped project selection, reload, keyboard/mobile and accessibility; and any separately approved live Groq smoke test. No migration, remote query/write, provider call, browser QA, commit, push or deployment is performed for P3.3.
+- Historical P3.3 verification: `bun test` **251 passed, 0 failed across 12 files**; `bun run check-types`, `bunx oxlint` (no diagnostics), `bun run --filter web build`, changed-file `bunx oxfmt --check` and `git diff --check` passed. The existing Phase 3 regex lint warning was cleaned without an unrelated refactor. Initial test iterations exposed a simulator SQL-dispatch ordering mistake (note identity read matched its project subquery); that offline test harness was corrected before these final results.
+- Deferred verification includes actual PostgreSQL writes/constraints/concurrency/rollback, live Groq tools and authenticated browser workflows. Offline simulators/SSR are not proof of these. No migration, remote query/write, provider call, browser QA, commit, push or deployment was performed as part of the historical P3.3 implementation stage.
+
+## 11. P3.4B sign-out warning fix — merged
+
+`6c24c1e` adds the session-level `data-unsaved` marker to the always-rendered chat composer. An unresolved proposal save can survive a latest-history reload after its individual preview leaves the rendered page; sign-out now detects that retained operation rather than relying only on visible draft forms. The existing note-save transaction, session and authorization behaviour are unchanged.
+
+`client.test.tsx` adds the off-page unresolved-save regression: reload retains the submitted payload/dirty state, composer wiring exposes the warning marker, and receipt recovery clears the pending state without another write. This is offline state/source-wiring coverage, not authenticated browser or database proof. The regression fixture now includes the message metadata required by `ChatView`; production contracts and behaviour are unchanged. The historical 251-test P3.3 result above predates this fix and is not a new verification count.

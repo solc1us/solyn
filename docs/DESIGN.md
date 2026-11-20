@@ -1,10 +1,10 @@
 # Solyn — Product UI/UX Design System
 
 **Version:** 2.0 · 18 November 2026  
-**Status:** Design baseline for PM review and phased implementation  
+**Status:** Implemented visual/interaction baseline; new changes and visual acceptance remain PM-owned
 **Product:** Solyn — Personal AI Project Assistant  
 **Applies to:** Existing workspace refinement (Phase 1), AI chat (Phase 2), and later knowledge workflows  
-**Technical source of truth:** `docs/PRD.md`, `docs/TECH_DESIGN.md`, current repository implementation
+**References:** `docs/PRD.md` for product scope; current code, feature READMEs and `docs/NOTE_PROPOSALS.md` for implementation; `docs/TECH_DESIGN.md` is the historical Phase 1 design
 
 > **North star:** A quiet project workspace with an AI assistant that understands context. Work stays in focus; AI is one step away.
 >
@@ -23,7 +23,7 @@
 | Density               | Compact productivity-app rhythm: tighter control, row and navigation padding without sacrificing usability    |
 | Composition           | A persistent sidebar and **one dominant main canvas**; avoid nested full-size cards                           |
 | Lists                 | Borderless rows; no per-item lines; soft neutral hover and selection backgrounds                              |
-| AI                    | First-class **Ask Solyn** destination when implemented, plus context entry points from projects/notes         |
+| AI                    | Implemented first-class **Ask Solyn** destination and project context entry points; note/source entry points remain phase-scoped         |
 | Source interaction    | Open relevant notes from AI answers without losing chat context (in a future retrieval phase)                 |
 | Writing               | Comfortable, plain-text-first note editor; existing explicit Save and conflict protection remain intact       |
 | Content tone          | Short, direct, functional; no motivational filler, fake metrics, or decorative captions                       |
@@ -340,7 +340,7 @@ Writing rules:
 
 ## 11. Implementation boundaries and acceptance
 
-### Phase 1 visual refinement — now
+### Phase 1 visual refinement — historical implementation scope
 
 **Allowed:** Update `docs/DESIGN.md` and existing frontend layout/styles/components to implement unified charcoal canvas, neutral-elevated buttons, tighter component spacing, borderless hover rows, compact headers, reduced copy and preserved night sky/sidebar.  
 **Not allowed:** Database/auth changes, backend refactor, AI placeholder UI, new dependencies, unrequested features or introducing an entirely new design system.
@@ -357,15 +357,15 @@ Writing rules:
 - Project/note CRUD, revision conflict, unsaved-change and session behavior are unchanged.
 - Agent runs focused tests/typecheck/lint/build; PM manually evaluates UI/UX.
 
-### Phase 2 — chat (planned, requires technical approval)
+### Phase 2 — chat (implemented)
 
-Implement only the subset ratified for Phase 2 after reviewing `docs/PRD.md` and implementation design: one navigable Ask Solyn chat destination, conversation/history and LLM behavior within the agreed scope. Do not claim source-grounded retrieval, AI note writes or cross-project search until those later capabilities genuinely exist.
+Ask Solyn, conversation/history and Groq streaming are implemented in the workspace. Phase 3 adds confirmed AI-assisted note creation; source-grounded retrieval/citations and cross-project search are not implemented. Preserve the existing phase boundaries rather than treating this historical design as permission for additional features.
 
 **Chat visual acceptance:** same app shell; compact neutral composer and Send control; visible scope; readable conversation; reliable loading/error behavior; logical return paths. Chat belongs to the product, not a decorative side-widget.
 
-### Later phases — drafts and retrieval
+### Phase 3 drafts (implemented) and later retrieval
 
-Add actual source links, note preview and AI-proposed draft confirmation as respective server capabilities become available. Preserve user confirmation and backend enforcement.
+Durable editable note previews, explicit confirmation and verified saved-note links are implemented and merged. Retrieval, citations and a source browser remain later scope. Preserve user confirmation and backend enforcement; merge status does not substitute for live integration or PM visual verification.
 
 ## 12. Research references
 

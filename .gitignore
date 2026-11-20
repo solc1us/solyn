@@ -13,9 +13,11 @@ apps/web/src/routeTree.gen.ts
 local.db
 local.db-*
 
-# Environment variables
-.env
-.env*.local
+# Environment variables (all workspaces); retain schemas and examples
+.env*
+!.env.schema
+!.env.example
+!.env.*.example
 
 # IDEs and editors
 .vscode/*

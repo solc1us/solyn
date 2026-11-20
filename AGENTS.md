@@ -2,11 +2,11 @@
 
 ## Product and sources of truth
 
-Solyn is a personal AI project knowledge assistant. The MVP is a hybrid interface: users manage projects and notes in the web UI and later interact with project knowledge through AI chat. It launches with one owner but must isolate data by account so additional independent users can be supported later.
+Solyn is a personal AI project knowledge assistant. Users manage projects and notes in the web UI and use AI chat to prepare drafts for explicit confirmation. Phase 3 is merged; source-grounded retrieval/citations remain later scope. It launches with one owner but must isolate data by account so additional independent users can be supported later.
 
 Before making changes:
 1. Read `docs/PRD.md` for product requirements.
-2. Read `docs/TECH_DESIGN.md` for the current technical design. If it is missing from your working tree, report that and stop before implementing technical-design-dependent work; do not recreate it from memory.
+2. Read `docs/TECH_DESIGN.md` as the historical Phase 1 design, not the complete current implementation reference. Use `docs/PRD.md` for product requirements, `docs/DESIGN.md` for visual/interaction direction, and the chat/workspace feature READMEs plus `docs/NOTE_PROPOSALS.md` for current contracts. Verify implementation claims against current code/tests; implementation status does not silently change approved product scope. If the technical design is missing, report that and stop before work dependent on it; do not recreate it from memory.
 3. Inspect relevant code, current Git status/branch, and `package.json` scripts. The checked-out code and current documentation take precedence over historical instructions.
 4. Respect more specific nested `AGENTS.md` files. In particular, keep `apps/web/AGENTS.md` and follow its Next.js-version documentation guidance.
 
@@ -20,18 +20,18 @@ Before making changes:
 - Use TypeScript and existing patterns. Do not add Express, tRPC, Turborepo, a separate backend, an agent framework, or a vector database without an approved concrete requirement.
 - Reuse existing infrastructure and components. Avoid new packages, layers, files, services, and refactors unless necessary.
 - Authentication is powered by Better Auth on the backend. The frontend UI must be Solyn's own design, not the scaffold's demo sign-in/sign-up pages. The existing `authClient` or supported API calls may still be used by custom UI; do not remove the underlying auth/session integration merely to remove template UI.
-- Visual design is **not approved yet**. Until references/design direction arrive, use only minimal functional UI needed for verification. Do not invent a complete design system, dashboard, or branding.
+- `docs/DESIGN.md` v2.0 and the existing Tailwind UI supply the implemented visual/interaction baseline. Preserve it; do not invent a replacement design system, dashboard or branding. Code/CI checks are not PM visual acceptance, and new design changes require task-specific direction.
 
 ## Security and data integrity
 
 - Treat auth, authorization, user data, notes/history, migrations, and deployment as sensitive.
 - Verify a server-side session and ownership for **every** project/note read and write, including future AI tools. Do not trust user IDs or project ownership supplied by the client or model.
-- Keep DB credentials, authentication secrets, and future model keys server-side; never log or commit secrets.
+- Keep DB credentials, authentication secrets, and model keys server-side; never log or commit secrets.
 - Product decision: the MVP has a controlled initial owner account and no public self-registration. The server must enforce disabled public sign-up; hiding a sign-up page alone is insufficient.
 - Product decision: use a separate development Supabase database; review migrations before applying them. Never run `db:push`, `db:migrate`, destructive SQL, seeding, or schema changes against any database without explicit PM approval for the exact action and target.
 - Product decision: preserve meaningful note edit history. Design and review the revision mechanism before implementing destructive or history-losing edits.
 - Do not create accounts by inserting plaintext passwords, bypassing Better Auth's password hashing, or exposing public bootstrap endpoints.
-- Future AI-generated knowledge writes require an explicit user confirmation; the backend validates the approved operation.
+- AI-generated knowledge writes require an explicit user confirmation; the backend validates the approved operation.
 
 ## Work boundaries and approvals
 
@@ -47,7 +47,7 @@ Before making changes:
 2. Define the smallest coherent change and relevant edge cases.
 3. Reuse existing architecture and apply a minimal diff.
 4. Add focused tests where practical; cover denial/unauthorized cases on sensitive paths.
-5. Run relevant checks and report exact command outputs or failures.
+5. Test proportionally: run targeted test files during implementation and related module regression tests. Full PR CI runs the complete suite. Run broader local tests/types/lint/build for security-sensitive or cross-cutting changes (auth/ownership, persistence/recovery, schema, shared controls); docs-only changes do not require repeated full local suites. Explicit test paths are reliable; `bun test --changed=origin/main` is an optional aid, not proof of complete regression coverage. Report exact commands and failures.
 6. Summarize changed files, behavior, test evidence, remaining risks, and any blocked steps.
 
 ## Verification scripts and caveats
@@ -61,9 +61,9 @@ Before making changes:
 
 ## Current phased scope
 
-- Phase 1: auth hardening, controlled owner provisioning design, project/notes data model, and manual workspace. No AI runtime integration yet.
-- Phase 2: chat and conversation persistence.
-- Phase 3: structured AI tool calls and confirmed knowledge writes.
+- Phase 1 implemented: auth hardening, controlled owner provisioning, project/notes data model, revisions and manual workspace.
+- Phase 2 implemented: persisted chat and Groq streaming.
+- Phase 3 merged: schema-only note preparation, durable previews, explicit confirmation and idempotent knowledge writes. Offline verification is distinct from deferred live database/provider/browser checks.
 - Phase 4: source-grounded retrieval and citations; start with simple PostgreSQL search and justify embeddings if needed.
 - Phase 5: MVP security, reliability, and release verification.
 - Structured tasks, deadlines, proactive automation, team collaboration, open SaaS registration, and billing are later roadmap items, not implicit MVP scope.
