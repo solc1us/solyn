@@ -1,12 +1,16 @@
 import type { ZodError } from "zod";
 
-import type { getNote, getProject, listNotes } from "./actions";
+import type { getNote, getProject, listNotes, searchNotes } from "./actions";
 import type { ErrorCode } from "./contracts";
 
 export type Project = Extract<Awaited<ReturnType<typeof getProject>>, { ok: true }>["data"];
 export type Note = Extract<Awaited<ReturnType<typeof getNote>>, { ok: true }>["data"];
 export type NoteSummary = Extract<
   Awaited<ReturnType<typeof listNotes>>,
+  { ok: true }
+>["data"][number];
+export type SearchNote = Extract<
+  Awaited<ReturnType<typeof searchNotes>>,
   { ok: true }
 >["data"][number];
 export type FieldErrors = Record<string, string>;
