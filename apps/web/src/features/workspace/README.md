@@ -43,6 +43,15 @@ Limits: project names 200 characters, descriptions 5,000, titles 300, content 10
 
 Lists default to 50 rows, maximum 100, with offset 0–100,000. Ordering is `updatedAt DESC, id DESC`. Offset pagination is deterministic for a fixed dataset, not a stable snapshot across concurrent edits. DTOs expose explicitly selected domain fields, not owner IDs or auth data; timestamps are Date values supported by React Server Function serialization.
 
+## Read-only note search
+
+- Existing `searchNotes({ projectId, query, limit?, offset? })` remains project-scoped, including its owned-project precheck and shared `NOT_FOUND` response for foreign/missing projects. Its UI and chat callers are unchanged.
+- `searchOwnedNotes({ query, projectId?, limit?, offset? })` is a separate backend-only operation for all projects of the fresh server-session owner. An optional project UUID narrows the same ownership-filtered query; foreign/missing filters return `{ ok: true, data: [] }`, without revealing project existence or names. No client action or AI integration is added in P4.6A.
+- Both strict contracts accept a trimmed literal query of 1–200 JavaScript string units, limit 1–50 (default 20), and offset 0–100,000 (default 0). Unknown identity/override fields are rejected. Search is case-insensitive title-or-content substring matching with escaped `%`, `_`, `!` and literal backslashes, never tokenized or semantic search.
+- Owner-wide results are `{ id, projectId, projectName, title, excerpt, noteDate, updatedAt }`. `projectName` comes from the same inner-joined owned parent, excluding absent/inaccessible parents. No owner IDs, project descriptions or full note bodies are returned. Excerpts retain the 320-PostgreSQL-character bound and at most 80 characters before a content match; note dates remain nullable and distinct from edit timestamps.
+- Ordering across projects is title match first, then `notes.updatedAt DESC, notes.id DESC`. Pagination is deterministic for an unchanged dataset, not a snapshot across edits. SQL enforces row/excerpt bounds; a limit bounds returned rows, not all search work.
+- Existing owner/project B-tree indexes support scope/join filtering, but do not accelerate arbitrary leading-wildcard text matching. No migration/index change is required for this MVP baseline; live plans/performance and persisted cross-account isolation are not established by the scripted tests. P4.6B must separately integrate owner-wide retrieval and authorize cross-project source projections; current chat scope rules are untouched.
+
 ## Note revision transaction
 
 `updateNote` starts a READ COMMITTED transaction and locks the ownership-scoped note using `FOR UPDATE OF notes`. Only then, in a separate statement, it reads the largest stored snapshot version. This avoids allocating a version using an old statement snapshot after waiting for another writer's lock. The outgoing version is `max(snapshot.version) + 1`, or 1 without history.

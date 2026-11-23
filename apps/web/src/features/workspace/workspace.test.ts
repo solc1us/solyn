@@ -85,6 +85,7 @@ const validCalls = (service: ReturnType<typeof createWorkspaceService>) => [
   () => service.updateProject({ projectId, name: "Changed" }),
   () => service.listNotes({ projectId }),
   () => service.searchNotes({ projectId, query: "budget" }),
+  () => service.searchOwnedNotes({ query: "budget" }),
   () => service.getNote({ projectId, noteId }),
   () => service.createNote({ projectId, title: "Title", content }),
   () => service.updateNote({ projectId, noteId, expectedVersion: 1, content: "Changed" }),
@@ -94,7 +95,7 @@ test("every domain operation denies unauthenticated callers before any SQL", asy
   const f = fixture([], null);
   for (const call of validCalls(f.service)) failure(await call(), "UNAUTHENTICATED");
   assert.equal(f.calls.length, 0);
-  assert.equal(f.sessionCalls(), 9);
+  assert.equal(f.sessionCalls(), 10);
 });
 
 test("strict contracts reject UUIDs, blank/oversize fields, unknown update fields and impossible dates", () => {
@@ -699,6 +700,287 @@ test("note search rejects foreign and nonexistent projects identically without r
       error: { code: "NOT_FOUND", message: "Resource not found." },
     });
     assert.equal(f.calls.length, 1);
+    assert.equal(f.remaining.length, 0);
+  }
+});
+
+test("owner search validates optional scope, strict fields and existing query/pagination bounds", async () => {
+  assert.deepEqual(contracts.searchOwnedNotesInput.parse({ query: " NFC \n" }), {
+    query: "NFC",
+    limit: 20,
+    offset: 0,
+  });
+  assert.equal(contracts.searchNotesInput.safeParse({ query: "NFC" }).success, false);
+  assert.equal(
+    contracts.searchOwnedNotesInput.safeParse({
+      query: "x".repeat(200),
+      projectId,
+      limit: 50,
+      offset: 100_000,
+    }).success,
+    true,
+  );
+  const f = fixture();
+  for (const input of [
+    undefined,
+    null,
+    {},
+    ...[null, 1, "", " \n", "x".repeat(201), "a\0b", "\uD800", "\uDC00"].map((query) => ({
+      query,
+    })),
+    ...[null, "bad", 1].map((projectId) => ({ query: "NFC", projectId })),
+    ...[0, -1, 51, 1.5, "20", null].map((limit) => ({ query: "NFC", limit })),
+    ...[-1, 100_001, 1.5, "0", null].map((offset) => ({ query: "NFC", offset })),
+    { query: "NFC", ownerId: "user-b" },
+    { query: "NFC", projectId, userId: "user-b" },
+  ])
+    failure(await f.service.searchOwnedNotes(input), "INVALID_INPUT");
+  assert.equal(f.calls.length, 0);
+});
+
+function ownerSearchScoped(sql: string, params: unknown[], ownerId = "user-a") {
+  assert.match(
+    sql,
+    /from "notes" inner join "projects" on "projects"\."id" = "notes"\."project_id"/,
+  );
+  // Ownership must govern BOTH title and content matches, not one side of OR.
+  assert.match(sql, /where \(\("projects"\."owner_id" = \$\d+\) and /);
+  assert.match(
+    sql,
+    /\(\("notes"\."title" ilike \$\d+ escape '!'\) or \("notes"\."content" ilike \$\d+ escape '!'\)\)\)\) order by/,
+  );
+  assert.ok(params.includes(ownerId));
+  assert.match(
+    sql,
+    /order by "notes"\."title" ilike \$\d+ escape '!' desc, "notes"\."updated_at" desc, "notes"\."id" desc limit \$\d+(?: offset \$\d+)?$/,
+  );
+  const projection = sql.split(' from "notes"')[0]!;
+  assert.match(projection, /"projects"\."name"/);
+  assert.match(
+    projection,
+    /substring\("notes"\."content" from greatest\(1, strpos\(lower\("notes"\."content"\), lower\(\$\d+\)\) - 80\) for 320\) as "excerpt"/,
+  );
+  assert.doesNotMatch(projection, /"owner_id"|"description"|"created_at"|select \*/);
+}
+
+const ownedSearchRow = [noteId, projectId, "Orion", "NFC decision", "Not approved", null, now];
+test("owner search returns multiple owned projects with exact source metadata in one read", async () => {
+  const excerpt = "📚".repeat(320);
+  const f = fixture([
+    {
+      sql: /^select .*from "notes"/,
+      rows: [
+        ownedSearchRow,
+        [otherProjectId, otherProjectId, "Vega", "Meeting", excerpt, "2025-12-01", now],
+      ],
+      inspect: (sql, params) => {
+        ownerSearchScoped(sql, params);
+        assert.ok(params.includes("%NFC%"));
+        assert.ok(params.includes("NFC"));
+        assert.ok(!sql.includes("NFC"));
+        assert.doesNotMatch(sql, /"notes"\."project_id" = \$/); // No implicit single-project scope.
+      },
+    },
+  ]);
+  assert.deepEqual(await f.service.searchOwnedNotes({ query: " NFC " }), {
+    ok: true,
+    data: [
+      {
+        id: noteId,
+        projectId,
+        projectName: "Orion",
+        title: "NFC decision",
+        excerpt: "Not approved",
+        noteDate: null,
+        updatedAt: now,
+      },
+      {
+        id: otherProjectId,
+        projectId: otherProjectId,
+        projectName: "Vega",
+        title: "Meeting",
+        excerpt,
+        noteDate: "2025-12-01",
+        updatedAt: now,
+      },
+    ],
+  });
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.remaining.length, 0);
+});
+
+test("owner search scopes mixed-owner candidates and excludes absent parents before returning metadata", async () => {
+  // Reference rows simulate the JOIN/owner result after checking its SQL shape;
+  // this is not execution of ownership predicates by a real PostgreSQL server.
+  const candidates = [
+    { ownerId: "user-a", row: ownedSearchRow },
+    {
+      ownerId: "user-b",
+      row: [otherProjectId, otherProjectId, "Private project", "NFC", "Private content", null, now],
+    },
+    {
+      ownerId: null,
+      row: [projectId, noteId, "Deleted parent", "NFC", "Orphan content", null, now],
+    },
+  ];
+  for (const ownerId of ["user-a", "user-b"]) {
+    const step: Step = {
+      sql: /^select .*from "notes"/,
+      inspect: (sql, params) => {
+        ownerSearchScoped(sql, params, ownerId);
+        assert.ok(!params.includes(ownerId === "user-a" ? "user-b" : "user-a"));
+        step.rows = candidates
+          .filter((candidate) => candidate.ownerId === ownerId)
+          .map((candidate) => candidate.row);
+      },
+    };
+    const f = fixture([step], ownerId);
+    const result = await f.service.searchOwnedNotes({ query: "NFC" });
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.deepEqual(
+        result.data.map((note) => note.projectName),
+        [ownerId === "user-a" ? "Orion" : "Private project"],
+      );
+      assert.equal(result.data.length, 1);
+    }
+    assert.equal(f.remaining.length, 0);
+  }
+});
+
+test("owner search optional owned-project filter retains ownership and scopes note metadata", async () => {
+  const f = fixture([
+    {
+      sql: /^select .*from "notes"/,
+      rows: [ownedSearchRow],
+      inspect: (sql, params) => {
+        ownerSearchScoped(sql, params);
+        assert.match(sql, /"notes"\."project_id" = \$/);
+        assert.ok(params.includes(projectId));
+      },
+    },
+  ]);
+  const result = await f.service.searchOwnedNotes({ projectId, query: "NFC" });
+  assert.equal(result.ok, true);
+  if (result.ok)
+    assert.deepEqual(
+      result.data.map((n) => [n.projectId, n.projectName]),
+      [[projectId, "Orion"]],
+    );
+  assert.equal(f.remaining.length, 0);
+});
+
+test("owner search foreign and missing project filters reveal neither notes nor project names", async () => {
+  for (const id of [projectId, otherProjectId]) {
+    const f = fixture(
+      [
+        {
+          sql: /^select .*from "notes"/,
+          inspect: (sql, params) => {
+            ownerSearchScoped(sql, params, "user-b");
+            assert.match(sql, /"notes"\."project_id" = \$/);
+            assert.ok(params.includes(id));
+            assert.ok(!params.includes("user-a"));
+          },
+        },
+      ],
+      "user-b",
+    );
+    assert.deepEqual(await f.service.searchOwnedNotes({ projectId: id, query: "NFC" }), {
+      ok: true,
+      data: [],
+    });
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.remaining.length, 0);
+  }
+});
+
+test("owner search empty results require an owned existing parent via inner join", async () => {
+  const f = fixture([{ sql: /^select .*from "notes"/, inspect: ownerSearchScoped }]);
+  assert.deepEqual(await f.service.searchOwnedNotes({ query: "NFC" }), { ok: true, data: [] });
+  assert.equal(f.remaining.length, 0);
+});
+
+test("owner search revalidates session identity on every read and rejects expired sessions before SQL", async () => {
+  let owner: string | null = "user-a";
+  const f = fixture(
+    ["user-a", "user-b"].map((id) => ({
+      sql: /^select .*from "notes"/,
+      inspect: (sql: string, params: unknown[]) => {
+        ownerSearchScoped(sql, params, id);
+        assert.ok(!params.includes(id === "user-a" ? "user-b" : "user-a"));
+      },
+    })),
+    () => owner,
+  );
+  for (owner of ["user-a", "user-b"])
+    assert.deepEqual(await f.service.searchOwnedNotes({ query: "NFC" }), { ok: true, data: [] });
+  for (owner of [null, ""])
+    failure(await f.service.searchOwnedNotes({ query: "NFC", projectId }), "UNAUTHENTICATED");
+  assert.equal(f.calls.length, 2);
+  assert.equal(f.sessionCalls(), 4);
+});
+
+for (const [query, pattern] of [
+  ["%", "%!%%"],
+  ["_", "%!_%"],
+  ["!", "%!!%"],
+  ["\\", "%\\%"],
+  ["50%_!\\path", "%50!%!_!!\\path%"],
+  ["' OR 1=1 --", "%' OR 1=1 --%"],
+]) {
+  test(`owner search escapes ${JSON.stringify(query)} as literal parameterized text`, async () => {
+    const f = fixture([
+      {
+        sql: /^select .*from "notes"/,
+        inspect: (sql, params) => {
+          ownerSearchScoped(sql, params);
+          assert.equal(params.filter((p) => p === pattern).length, 3);
+          assert.ok(params.includes(query));
+          assert.ok(!sql.includes("OR 1=1"));
+        },
+      },
+    ]);
+    assert.deepEqual(await f.service.searchOwnedNotes({ query }), { ok: true, data: [] });
+    assert.equal(f.remaining.length, 0);
+  });
+}
+
+test("owner search orders globally by title match, edit time and unique ID with bounded pagination", async () => {
+  for (const input of [
+    { query: "NFC" },
+    { query: "NFC", limit: 50, offset: 100_000 },
+    { query: "NFC", limit: 2, offset: 3 },
+  ]) {
+    const f = fixture([
+      {
+        sql: /^select .*from "notes"/,
+        inspect: (sql, params) => {
+          ownerSearchScoped(sql, params);
+          assert.deepEqual(
+            input.offset ? params.slice(-2) : params.slice(-1),
+            input.offset ? [input.limit ?? 20, input.offset] : [input.limit ?? 20],
+          );
+        },
+      },
+    ]);
+    assert.deepEqual(await f.service.searchOwnedNotes(input), { ok: true, data: [] });
+    assert.equal(f.remaining.length, 0);
+  }
+});
+
+test("owner search hides session and SQL failures without leaking metadata", async () => {
+  const privateError = new Error("synthetic private project name, SQL and credentials");
+  for (const f of [
+    fixture([], () => {
+      throw privateError;
+    }),
+    fixture([{ sql: /^select .*from "notes"/, error: privateError }]),
+  ]) {
+    assert.deepEqual(await f.service.searchOwnedNotes({ query: "NFC" }), {
+      ok: false,
+      error: { code: "UNAVAILABLE", message: "Workspace is unavailable. Please try again." },
+    });
     assert.equal(f.remaining.length, 0);
   }
 });

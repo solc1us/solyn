@@ -58,6 +58,9 @@ export const searchNotesInput = z.strictObject({
   offset: pagination.offset,
 });
 export type SearchNotesInput = z.input<typeof searchNotesInput>;
+// Separate owner-wide read contract; omission means all projects of the session owner.
+export const searchOwnedNotesInput = searchNotesInput.partial({ projectId: true });
+export type SearchOwnedNotesInput = z.input<typeof searchOwnedNotesInput>;
 export const noteInput = z.strictObject({ projectId: uuid, noteId: uuid });
 export const createNoteInput = z.strictObject({
   projectId: uuid,
