@@ -74,12 +74,11 @@ export function messageStatus(message: UiMessage, busy: boolean) {
 }
 export class ChatSessions {
   private sessions = new Map<string, ChatSession>();
-  select(key: string, create: () => ChatSession, active: ChatSession | null = null) {
+  select(key: string, create: () => ChatSession) {
     const found = this.sessions.get(key);
-    if (found) {
-      if (found !== active) found.invalidateSources();
-      return found;
-    }
+    // Selection can run more than once during render (including StrictMode).
+    // Only the committed view lifecycle may invalidate/publish session state.
+    if (found) return found;
     const session = create();
     if (this.sessions.size >= 10) this.sessions.delete(this.sessions.keys().next().value!);
     this.sessions.set(key, session);
@@ -371,7 +370,7 @@ export class ChatSession {
       !this.state.pendingTurn
     );
   }
-  // Called only when reactivating an inactive cached session, before rendering it.
+  // Called on committed session switches, before paint, or before a fresh read.
   invalidateSources() {
     if (!this.conversationId) return;
     this.sourceRead++;

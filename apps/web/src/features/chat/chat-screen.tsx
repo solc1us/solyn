@@ -137,34 +137,30 @@ export default function ChatScreen({
     ? `conversation:${conversationId}`
     : `new:${project?.id ?? "general"}`;
   function select() {
-    return sessions.current.select(
-      routeKey,
-      () => {
-        const session = new ChatSession(
-          {
-            create: actions.createConversation,
-            confirm: confirmNoteProposal,
-            recoverProposal: actions.getNoteProposal,
-            read: actions.getConversation,
-            fetch: (...args) => fetch(...args),
-            uuid: () => crypto.randomUUID(),
-            created: (id) => {
-              sessions.current.promote(routeKey, id, session);
-              if (activeSession.current === session)
-                startTransition(() =>
-                  router.replace(`/chat?conversationId=${id}`, { scroll: false }),
-                );
-            },
-            changed: () => {
-              if (activeSession.current === session) startTransition(() => router.refresh());
-            },
+    return sessions.current.select(routeKey, () => {
+      const session = new ChatSession(
+        {
+          create: actions.createConversation,
+          confirm: confirmNoteProposal,
+          recoverProposal: actions.getNoteProposal,
+          read: actions.getConversation,
+          fetch: (...args) => fetch(...args),
+          uuid: () => crypto.randomUUID(),
+          created: (id) => {
+            sessions.current.promote(routeKey, id, session);
+            if (activeSession.current === session)
+              startTransition(() =>
+                router.replace(`/chat?conversationId=${id}`, { scroll: false }),
+              );
           },
-          { conversationId, project, initial },
-        );
-        return session;
-      },
-      activeSession.current,
-    );
+          changed: () => {
+            if (activeSession.current === session) startTransition(() => router.refresh());
+          },
+        },
+        { conversationId, project, initial },
+      );
+      return session;
+    });
   }
   const [selection, setSelection] = useState(() => ({ key: routeKey, session: select() }));
   if (selection.key !== routeKey) setSelection({ key: routeKey, session: select() });
@@ -175,12 +171,12 @@ export default function ChatScreen({
   useEffect(() => {
     // Adopt a fresh authorized snapshot when returning to a cached conversation,
     // but never apply an older route response over an active/promoted stream.
-    if (previousSession.current === session) return;
+    const switched = previousSession.current !== session;
     previousSession.current = session;
-    // Cached route payloads are not a fresh authorization check. Cached source
-    // links were cleared synchronously by select; use an authenticated action.
+    // Cached route payloads are not a fresh authorization check. The layout
+    // effect clears switched-session sources before paint; refresh via an action.
     if (session.getSnapshot().needsReconcile) void session.reload(false, false);
-    else if (initial) session.adopt(initial);
+    else if (switched && initial) session.adopt(initial);
   }, [session, initial]);
   const messages = useRef<HTMLDivElement>(null);
   const form = useRef<HTMLFormElement>(null);
@@ -202,6 +198,7 @@ export default function ChatScreen({
     setHistory(false);
   }, [session]);
   useLayoutEffect(() => {
+    if (previousSession.current !== session) session.invalidateSources();
     activeSession.current = session;
     pinned.current = true;
     return () => {
@@ -398,7 +395,7 @@ export default function ChatScreen({
                       : "No answer was saved."}
                 </p>
               )}
-              <RetrievedNotes message={message} />
+              {previousSession.current === session ? <RetrievedNotes message={message} /> : null}
               {message.persisted && message.status === "completed" && message.proposal ? (
                 <ProposalPreview
                   key={message.proposal.id}

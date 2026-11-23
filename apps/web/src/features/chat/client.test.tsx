@@ -358,7 +358,36 @@ test("sources history revocation and authoritative empty arrays replace rather t
   assert.equal(f.sent.length, 0);
 });
 
-test("sources cached conversations clear links before rendering, preserve drafts and use fresh action reads", async () => {
+test("H01 repeated render-time initialization preserves fresh sources without notifications or extra reads", () => {
+  const f = fixture({ existing: true, project: true, initial: ok(sourceHistory()) });
+  const sessions = new ChatSessions();
+  let creates = 0;
+  const initialize = () => ({
+    key: conversationId,
+    session: sessions.select(conversationId, () => {
+      creates++;
+      return f.session;
+    }),
+  });
+  const first = initialize();
+  const snapshot = first.session.getSnapshot();
+  let notifications = 0;
+  first.session.subscribe(() => {
+    notifications++;
+  });
+  // React's development StrictMode invokes the lazy state initializer twice
+  // with the same useRef cache, before an active session has been committed.
+  const repeated = initialize();
+  assert.equal(repeated.session, first.session);
+  assert.deepEqual(repeated.session.getSnapshot().messages.at(-1)!.sources, [source]);
+  assert.equal(repeated.session.getSnapshot(), snapshot);
+  assert.equal(repeated.session.getSnapshot().needsReconcile, false);
+  assert.equal(creates, 1);
+  assert.equal(notifications, 0);
+  assert.equal(f.reads.length, 0);
+});
+
+test("sources committed cached reactivation clears links before paint, preserves drafts and uses fresh action reads", async () => {
   let release!: (value: ReturnType<typeof ok<ChatView>>) => void;
   const f = fixture({
     existing: true,
@@ -372,10 +401,12 @@ test("sources cached conversations clear links before rendering, preserve drafts
   const sessions = new ChatSessions();
   sessions.select(conversationId, () => f.session);
   f.session.setDraft("Keep draft");
-  // Active/promoted sessions retain the fresh stream projection.
-  sessions.select(conversationId, () => assert.fail(), f.session);
-  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, [source]);
+  // Render-time cache selection is read-only, even before an active view exists.
   sessions.select(conversationId, () => assert.fail());
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, [source]);
+  // ChatScreen's committed layout effect invalidates switched sessions, before
+  // paint. Its passive effect then requests a fresh action read.
+  f.session.invalidateSources();
   assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, []);
   assert.equal(f.session.getSnapshot().needsReconcile, true);
   assert.equal(f.session.getSnapshot().draft, "Keep draft");
