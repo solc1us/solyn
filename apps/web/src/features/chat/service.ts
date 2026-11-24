@@ -406,7 +406,11 @@ export function createChatService({
           .where(
             and(
               owned(ownerId),
-              value.projectId ? eq(conversations.projectId, value.projectId) : undefined,
+              value.projectId === null
+                ? isNull(conversations.projectId)
+                : value.projectId
+                  ? eq(conversations.projectId, value.projectId)
+                  : undefined,
             ),
           )
           .orderBy(desc(conversations.updatedAt), desc(conversations.id))

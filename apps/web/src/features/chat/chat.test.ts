@@ -932,6 +932,95 @@ test("conversation listing is owner/project scoped, bounded and stably ordered",
   exhausted(f);
 });
 
+test("omitted listing scope remains all owned history, including historical project conversations", async () => {
+  const f = fixture([
+    {
+      sql: /from "chat_conversations"/,
+      rows: [conversationRow, [turnId, projectId, "Older project thread", now, now]],
+      inspect: (sql, params) => {
+        scoped(sql, params);
+        assert.equal([...sql.matchAll(/"project_id" is null/g)].length, 1); // Only the existing ownership predicate.
+        assert.deepEqual(params.slice(-1), [50]);
+      },
+    },
+  ]);
+  const result = data(await f.service.listConversations());
+  assert.deepEqual(
+    result.map((row) => row.projectId),
+    [null, projectId],
+  );
+  exhausted(f);
+  assert.equal(contracts.listConversationsInput.parse({}).projectId, undefined);
+});
+
+test("explicit null filters Main Chat in SQL before ordering and pagination without changing ownership", async () => {
+  const f = fixture([
+    {
+      sql: /from "chat_conversations"/,
+      rows: [conversationRow],
+      inspect: (sql, params) => {
+        scoped(sql, params);
+        assert.match(
+          sql.replace(/[()]/g, ""),
+          /and "chat_conversations"\."project_id" is null order by "chat_conversations"\."updated_at" desc, "chat_conversations"\."id" desc limit \$\d+ offset \$/,
+        );
+        assert.deepEqual(params.slice(-2), [20, 40]);
+        assert.ok(!params.includes(null));
+      },
+    },
+  ]);
+  assert.equal(
+    data(await f.service.listConversations({ projectId: null, limit: 20, offset: 40 }))[0]!
+      .projectId,
+    null,
+  );
+  exhausted(f);
+  assert.equal(contracts.listConversationsInput.parse({ projectId: null }).projectId, null);
+});
+
+test("Main Chat and all-history listing retain fresh account isolation and safe empty results", async () => {
+  for (const scope of [{ projectId: null }, {}]) {
+    const f = fixture(
+      [
+        {
+          sql: /from "chat_conversations"/,
+          inspect: (sql, params) => {
+            assert.match(sql, /"chat_conversations"\."owner_id" = \$/);
+            assert.match(sql, /"projects"\."owner_id" = \$/);
+            assert.equal(params.filter((value) => value === "user-b").length, 2);
+            assert.ok(!params.includes("user-a"));
+          },
+        },
+      ],
+      "user-b",
+    );
+    assert.deepEqual(data(await f.service.listConversations(scope)), []);
+    f.expireSession();
+    failure(await f.service.listConversations(scope), "UNAUTHENTICATED");
+    assert.equal(f.sessionCalls(), 2);
+    assert.equal(f.calls.length, 1);
+    exhausted(f);
+  }
+});
+
+test("both history scopes sanitize failures and reject caller identity overrides before SQL", async () => {
+  for (const scope of [{ projectId: null }, {}]) {
+    const f = fixture([
+      { sql: /from "chat_conversations"/, error: new Error("private driver sentinel") },
+    ]);
+    const result = await f.service.listConversations(scope);
+    failure(result, "UNAVAILABLE");
+    assert.ok(!JSON.stringify(result).includes("private driver sentinel"));
+    exhausted(f);
+    const invalid = fixture();
+    failure(
+      await invalid.service.listConversations({ ...scope, ownerId: "user-b" }),
+      "INVALID_INPUT",
+    );
+    assert.equal(invalid.calls.length, 0);
+  }
+});
+
 test("latest project conversation lookup filters in SQL before stable ordering and limit one", async () => {
   const f = fixture([
     {
@@ -974,11 +1063,11 @@ test("foreign, nonexistent and empty project history all return empty without wr
   }
 });
 
-test("project history filter rejects malformed IDs, null, identity overrides and invalid bounds before SQL", async () => {
+test("project history filter rejects malformed IDs, identity overrides and invalid bounds before SQL", async () => {
   const f = fixture();
   for (const input of [
     { projectId: "invalid" },
-    { projectId: null },
+    { projectId: false },
     { projectId: [projectId] },
     { projectId, ownerId: "user-b" },
     { projectId, limit: 0 },

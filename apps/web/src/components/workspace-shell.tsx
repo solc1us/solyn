@@ -109,6 +109,7 @@ export default function WorkspaceShell({
           <Link
             className="nav-item flex min-h-[36px] items-center gap-[12px] rounded-[7px] px-[12px] py-[7px] text-[14px] text-muted-foreground aria-[current=page]:bg-(--selected) aria-[current=page]:text-foreground aria-[current=page]:shadow-[inset_2px_0_var(--brand)] [&:hover:not([aria-current=page])]:bg-(--hover) [&:hover:not([aria-current=page])]:text-foreground [@media(max-width:760px)]:min-h-[44px] [@media(pointer:coarse)]:min-h-[44px]"
             href="/chat"
+            title="Main Chat — search notes across your projects"
             aria-current={pathname === "/chat" ? "page" : undefined}
           >
             <MessageSquare size={17} aria-hidden="true" />
@@ -118,13 +119,13 @@ export default function WorkspaceShell({
         {recentConversations.length ? (
           <nav
             className="recent-conversations mt-[20px] grid gap-[3px]"
-            aria-label="Recent conversations"
+            aria-label="Recent Main Chat threads"
             onClick={(event) => {
               if (event.target instanceof Element && event.target.closest("a")) setOpen(false);
             }}
           >
             <p className="mx-[12px] mb-[4px] text-[12px] text-muted-foreground">
-              Recent conversations
+              Recent Main Chat threads
             </p>
             {recentConversations.map((conversation) => (
               <Link
@@ -134,7 +135,7 @@ export default function WorkspaceShell({
               >
                 <span className="truncate">{conversation.title}</span>
                 <small className="text-[11px] text-muted-foreground">
-                  {conversation.projectId ? "Project chat" : "General chat"}
+                  {conversation.projectId ? "Project Chat" : "Main Chat"}
                 </small>
               </Link>
             ))}

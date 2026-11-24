@@ -1481,6 +1481,37 @@ test("dismissal source invalidation and reopen reconciliation preserve drafts an
   assert.deepEqual(f.sent, []);
 });
 
+test("navigation focuses Main Chat while preserving discoverable legacy project history and popup entry", () => {
+  const shell = readFileSync(
+    new URL("../../components/workspace-shell.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(shell, /href="\/chat"\s+title="Main Chat — search notes across your projects"/);
+  assert.match(shell, /Recent Main Chat threads/);
+  const layout = readFileSync(new URL("../../app/(workspace)/layout.tsx", import.meta.url), "utf8");
+  assert.match(layout, /chat\.listConversations\(\{ limit: 5, projectId: null \}\)/);
+  assert.match(layout, /recentConversations=\{recent\.ok \? recent\.data : \[\]\}/);
+  const screen = readFileSync(new URL("./chat-screen.tsx", import.meta.url), "utf8");
+  assert.match(screen, /includeProjectChats \? \{\} : \{ projectId: null \}/);
+  assert.match(screen, /Include project chats/);
+  assert.match(screen, /Main Chat · Search notes across your projects/);
+  assert.match(screen, /href=\{`\/chat\?conversationId=\$\{row\.id\}`\}/);
+  assert.match(screen, /No Main Chat threads yet/);
+  const page = readFileSync(
+    new URL("../../app/(workspace)/projects/[projectId]/page.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(page, /<ProjectChatPopup project=\{\{ id: project\.id, name: project\.name \}\}/);
+  assert.doesNotMatch(page, /\/chat\?projectId/);
+  const chatPage = readFileSync(
+    new URL("../../app/(workspace)/chat/page.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(chatPage, /getConversation\(\{ conversationId, latest: true, limit: 50 \}\)/);
+  assert.match(chatPage, /workspace\.getProject\(\{ projectId \}\)/);
+  assert.match(chatPage, /<ChatScreen project=\{\{ id: project\.id, name: project\.name \}\}/);
+});
+
 test("popup owner wiring keeps Main Chat chrome and scrolling while hiding popup conversation controls", () => {
   const screen = readFileSync(new URL("./chat-screen.tsx", import.meta.url), "utf8");
   assert.match(screen, /!compact && \(/);

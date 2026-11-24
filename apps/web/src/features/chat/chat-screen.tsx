@@ -38,6 +38,7 @@ function ChatHistory({ close }: { close: () => void }) {
     Extract<Awaited<ReturnType<typeof actions.listConversations>>, { ok: true }>["data"]
   >([]);
   const [offset, setOffset] = useState(0);
+  const [includeProjectChats, setIncludeProjectChats] = useState(false);
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<Issue | null>(null);
   useEffect(() => {
@@ -46,7 +47,11 @@ function ChatHistory({ close }: { close: () => void }) {
     setError(null);
     startTransition(async () => {
       try {
-        const result = await actions.listConversations({ limit: 20, offset });
+        const result = await actions.listConversations({
+          limit: 20,
+          offset,
+          ...(includeProjectChats ? {} : { projectId: null }),
+        });
         if (!active) return;
         if (result.ok) setRows(result.data);
         else setError(result.error.code);
@@ -59,13 +64,26 @@ function ChatHistory({ close }: { close: () => void }) {
     return () => {
       active = false;
     };
-  }, [offset]);
+  }, [offset, includeProjectChats]);
   return (
     <nav
       className="chat-history absolute inset-[100%_16px_auto] rounded-[8px] border border-border bg-popover p-[12px]"
       aria-label="Conversation history"
       aria-busy={busy}
     >
+      <label className="mb-[8px] flex min-h-[32px] items-center gap-[8px] text-[13px] [@media(pointer:coarse)]:min-h-[44px]">
+        <input
+          type="checkbox"
+          checked={includeProjectChats}
+          onChange={(event) => {
+            setBusy(true);
+            setRows([]);
+            setOffset(0);
+            setIncludeProjectChats(event.target.checked);
+          }}
+        />
+        Include project chats
+      </label>
       {busy ? (
         <p role="status">Loading conversations…</p>
       ) : error ? (
@@ -83,14 +101,14 @@ function ChatHistory({ close }: { close: () => void }) {
                   >
                     <span>{row.title}</span>
                     <small className="text-[12px] text-muted-foreground">
-                      {row.projectId ? "Project chat" : "General chat"}
+                      {row.projectId ? "Project Chat" : "Main Chat"}
                     </small>
                   </Link>
                 </li>
               ))}
             </ul>
           ) : (
-            <p>No conversations yet.</p>
+            <p>{includeProjectChats ? "No conversations yet." : "No Main Chat threads yet."}</p>
           )}
         </>
       )}
@@ -347,14 +365,16 @@ export default function ChatScreen({
               <Link
                 href={`/projects/${state.project.id}`}
                 className="inline-flex items-center gap-[6px] text-[#b2c7ff]"
-                aria-label={`Project: ${state.project.name}. Back to project`}
+                aria-label={`Project Chat: ${state.project.name}. Back to project`}
               >
                 <ArrowLeft size={14} aria-hidden="true" />
-                Project: {state.project.name}
+                Project Chat: {state.project.name}
               </Link>
             ) : (
               <span>
-                {conversationId && !state.conversation ? "Scope unavailable" : "General chat"}
+                {conversationId && !state.conversation
+                  ? "Scope unavailable"
+                  : "Main Chat · Search notes across your projects"}
               </span>
             )}
           </div>
@@ -390,7 +410,11 @@ export default function ChatScreen({
           ) : null}
           {!state.messages.length && !state.needsReconcile ? (
             <p className="chat-empty py-[24px] text-muted-foreground">
-              {state.conversation ? "No messages yet." : "Start a conversation."}
+              {state.conversation
+                ? "No messages yet."
+                : state.project
+                  ? "Start a conversation."
+                  : "Ask about notes across your projects. No project selection needed."}
             </p>
           ) : null}
           {state.messages.map((message) => (

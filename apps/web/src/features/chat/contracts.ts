@@ -28,7 +28,11 @@ export const createConversationInput = z.strictObject({
   title: z.string().trim().min(1).max(300),
   projectId: uuid.nullable().default(null),
 });
-export const listConversationsInput = z.strictObject({ ...pagination, projectId: uuid.optional() });
+// Omitted: all owned history; null: Main Chat only; UUID: one owned project.
+export const listConversationsInput = z.strictObject({
+  ...pagination,
+  projectId: uuid.nullable().optional(),
+});
 export const getConversationInput = z.strictObject({
   conversationId: uuid,
   ...pagination,
