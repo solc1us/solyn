@@ -251,8 +251,8 @@ test("workspace owners use rounded bordered fields and fixed scrolling textareas
     ),
   );
   for (const expected of [
-    "h-[420px]",
-    "max-h-[65dvh]",
+    "h-[160px]",
+    "max-h-[40dvh]",
     "[@media(pointer:coarse)]:min-h-[44px]",
     "text-[17px]",
     "[@media(max-width:760px)]:text-[16px]",
@@ -287,7 +287,10 @@ test("workspace owners use rounded bordered fields and fixed scrolling textareas
     assert.ok(!classes.has("resize-y"));
   }
   const css = readFileSync(new URL("../../index.css", import.meta.url), "utf8");
-  assert.match(css, /\.form-control\s*\{\s*background: var\(--secondary\)/);
+  assert.match(css, /\.form-control,\s*\.chat-composer\s*\{\s*background: #1c1e25/);
+  assert.ok(css.includes('.form-control:not(:focus):not([aria-invalid="true"])'));
+  assert.ok(css.includes('.chat-composer:not(:focus-within):not([aria-invalid="true"])'));
+  assert.match(css, /border-color: #363a42/);
   assert.doesNotMatch(css, /border-bottom-color/);
 });
 
@@ -330,6 +333,33 @@ test("project and note forms both use the available content width", () => {
   assert.equal((page.match(/\{project\.description\}/g) ?? []).length, 1);
   assert.ok(!header.includes("Created {formatDate"));
   assert.ok(!header.includes(":sticky"));
+});
+
+test("workspace actions and unsaved feedback are adjacent in upper-right toolbars without redundant controls", () => {
+  for (const [file, marker] of [
+    ["./note-editor.tsx", "editor-toolbar"],
+    ["./project-form.tsx", "project-toolbar"],
+  ]) {
+    const source = readFileSync(new URL(file!, import.meta.url), "utf8");
+    const toolbar = source.match(new RegExp(`<div className="${marker}[^]*?<\\/div>`))?.[0];
+    assert.ok(toolbar);
+    assert.ok(toolbar.includes("justify-end"));
+    assert.ok(toolbar.includes('role="status"') && toolbar.includes("Unsaved changes"));
+    assert.match(toolbar, /<\/p>\s*<Button/);
+    assert.ok(source.indexOf(toolbar) < source.indexOf("<fieldset"));
+    assert.match(source, /<MutationError/);
+    assert.match(source, /useUnsavedChanges\(dirty \|\| pending\)/);
+  }
+  const note = readFileSync(new URL("./note-editor.tsx", import.meta.url), "utf8");
+  const project = readFileSync(new URL("./project-form.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(
+    note,
+    /"New note"|"All changes saved"|Nothing is saved|Plain text\. Formatting/,
+  );
+  assert.doesNotMatch(project, /Cancel|form-footer|Optional context for this project/);
+  assert.match(note, /When it happened, if known/);
+  assert.match(project, /Check your projects before retrying/);
+  assert.match(note, /Before retrying an uncertain save/);
 });
 
 test("new and existing editors begin clean without inventing event dates", () => {

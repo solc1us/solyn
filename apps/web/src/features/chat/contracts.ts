@@ -38,6 +38,11 @@ export const getConversationInput = z.strictObject({
   ...pagination,
   latest: z.boolean().default(false),
 });
+export const renameConversationInput = z.strictObject({
+  conversationId: uuid,
+  title: createConversationInput.shape.title.refine(isChatText),
+});
+export const deleteConversationInput = z.strictObject({ conversationId: uuid });
 export const beginTurnInput = z.strictObject({
   ...turn,
   content,

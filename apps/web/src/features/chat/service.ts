@@ -398,6 +398,71 @@ export function createChatService({
         }),
       );
     },
+    renameConversation(input: unknown) {
+      return run(contracts.renameConversationInput, input, (value, ownerId) =>
+        db.transaction(
+          async (tx) => {
+            const conversation = await lock(tx, ownerId, value.conversationId);
+            // Management is Main Chat only; project/legacy scope remains immutable.
+            if (conversation.projectId !== null) throw missing();
+            const [renamed] = await tx
+              .update(conversations)
+              .set({ title: value.title, updatedAt: sql`${conversations.updatedAt}` })
+              .where(and(owned(ownerId, conversation.id), isNull(conversations.projectId)))
+              .returning(conversationFields);
+            if (!renamed) throw missing();
+            return renamed;
+          },
+          { isolationLevel: "read committed" },
+        ),
+      );
+    },
+    deleteConversation(input: unknown) {
+      return run(contracts.deleteConversationInput, input, (value, ownerId) =>
+        db.transaction(
+          async (tx) => {
+            // Same first lock as turn writers; also conflicts with confirmation's
+            // conversation SHARE lock. Re-read pending state AFTER any lock wait.
+            const conversation = await lock(tx, ownerId, value.conversationId);
+            if (conversation.projectId !== null) throw missing();
+            const [pending] = await tx
+              .select({ id: messages.id })
+              .from(messages)
+              .where(and(ownedMessages(ownerId, conversation.id), eq(messages.status, "pending")))
+              .limit(1);
+            // Even abandoned pending rows require existing explicit recovery first.
+            if (pending)
+              throw new ChatError(
+                "CONFLICT",
+                "Resolve the pending reply before deleting this chat.",
+              );
+            await tx.delete(noteProposals).where(
+              exists(
+                tx
+                  .select({ id: messages.id })
+                  .from(messages)
+                  .where(
+                    and(
+                      eq(messages.id, noteProposals.sourceMessageId),
+                      ownedMessages(ownerId, conversation.id),
+                    ),
+                  ),
+              ),
+            );
+            await tx.delete(messages).where(ownedMessages(ownerId, conversation.id));
+            const [deleted] = await tx
+              .delete(conversations)
+              .where(and(owned(ownerId, conversation.id), isNull(conversations.projectId)))
+              .returning({ id: conversations.id });
+            if (!deleted) throw missing();
+            // FK direction is proposal -> note: removing a receipt never deletes a
+            // confirmed note or revisions. No cascades, repairs or provider work.
+            return deleted;
+          },
+          { isolationLevel: "read committed" },
+        ),
+      );
+    },
     listConversations(input: unknown = {}) {
       return run(contracts.listConversationsInput, input, async (value, ownerId) =>
         db

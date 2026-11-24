@@ -11,10 +11,13 @@ import {
   ChatSessions,
   conversationTitle,
   messageStatus,
+  isGenerationFailure,
+  replyFailureNotice,
   shouldSend,
   type ChatView,
 } from "./client-state";
-import { MessageContent } from "./message-content";
+import { MessageContent, ReplyFailure } from "./message-content";
+import { ConversationRow } from "./conversation-row";
 import { RetrievedNotes } from "./retrieved-notes";
 import { ProposalPreview } from "./proposal-preview";
 import { PROPOSAL_MESSAGE, type ProposalView, type SourceView } from "./contracts";
@@ -805,6 +808,126 @@ test("pre-stream JSON errors discard server message details; replay validates pe
   );
 });
 
+test("acknowledged rename changes cached title only, while delete retires and evicts stale sessions", () => {
+  const cache = new ChatSessions();
+  const f = fixture({ existing: true });
+  cache.select(`conversation:${conversationId}`, () => f.session);
+  f.session.setDraft("Keep my current draft");
+  const before = f.session.getSnapshot();
+  cache.rename(conversationId, "Renamed");
+  assert.deepEqual(f.session.getSnapshot(), {
+    ...before,
+    conversation: { ...before.conversation!, title: "Renamed" },
+  });
+  assert.equal(f.sent.length + f.reads.length + f.confirms.length, 0);
+  cache.remove(conversationId);
+  const retired = f.session.getSnapshot();
+  assert.equal(retired.conversation, null);
+  assert.deepEqual(retired.messages, []);
+  assert.equal(retired.draft, "");
+  assert.equal(f.session.canSend, false);
+  assert.equal(f.session.canRetry, false);
+  assert.ok(cache.isDeleted(conversationId));
+  cache.rename(conversationId, "Late stale rename");
+  f.session.adopt(ok(f.view()));
+  assert.equal(f.session.getSnapshot().conversation, null);
+  const stale = cache.select(
+    `conversation:${conversationId}`,
+    () => fixture({ existing: true }).session,
+  );
+  assert.equal(stale.getSnapshot().conversation, null);
+  assert.equal(stale.canSend, false);
+  const lateCreation = fixture().session;
+  assert.equal(cache.promote("new:general", conversationId, lateCreation), false);
+  assert.equal(lateCreation.canSend, false);
+});
+
+test("acknowledged rename survives older reads/RSC while a subsequent fresh read can update the title", async () => {
+  let release!: (value: Awaited<ReturnType<Dependencies["read"]>>) => void;
+  const pending = new Promise<Awaited<ReturnType<Dependencies["read"]>>>((resolve) => {
+    release = resolve;
+  });
+  let hold = true;
+  const f = fixture({ existing: true, read: async () => (hold ? pending : ok(f.view())) });
+  const reading = f.session.reload();
+  f.session.renameTitle(conversationId, "Acknowledged title");
+  release(ok(f.view()));
+  await reading;
+  assert.equal(f.session.getSnapshot().conversation?.title, "Acknowledged title");
+  f.session.adopt(ok(f.view()));
+  await until(() => !f.session.getSnapshot().needsReconcile);
+  assert.equal(f.session.getSnapshot().conversation?.title, "Acknowledged title");
+  hold = false;
+  await f.session.reload();
+  assert.equal(f.session.getSnapshot().conversation?.title, f.view().conversation.title);
+});
+
+test("retiring an active session aborts its request and prevents late stream/read state from returning", async () => {
+  let release!: (value: Response) => void;
+  let signal!: AbortSignal;
+  const wait = new Promise<Response>((resolve) => {
+    release = resolve;
+  });
+  const f = fixture({
+    existing: true,
+    fetch: async (_attempt, value) => {
+      signal = value;
+      return wait;
+    },
+  });
+  f.session.setDraft(attempt.content);
+  const sending = f.session.submit();
+  await until(() => f.sent.length === 1);
+  f.session.retire();
+  assert.equal(signal.aborted, true);
+  release(sse(start() + delta() + finish()));
+  await sending;
+  assert.deepEqual(f.session.getSnapshot().messages, []);
+  assert.equal(f.session.getSnapshot().phase, "idle");
+  assert.equal(f.reads.length, 0);
+  f.session.setDraft("Cannot revive");
+  await f.session.submit();
+  assert.equal(f.sent.length, 1);
+  let readRelease!: (view: Awaited<ReturnType<Dependencies["read"]>>) => void;
+  const readWait = new Promise<Awaited<ReturnType<Dependencies["read"]>>>((resolve) => {
+    readRelease = resolve;
+  });
+  const reading = fixture({ existing: true, read: async () => readWait });
+  const loading = reading.session.reload();
+  reading.session.retire();
+  readRelease(ok(reading.view()));
+  await loading;
+  assert.equal(reading.session.getSnapshot().conversation, null);
+  assert.deepEqual(reading.session.getSnapshot().messages, []);
+});
+
+test("conversation rows keep links usable, truncate titles and expose management only for Main Chat", () => {
+  const props = {
+    conversation,
+    rename: async () => ok(conversation),
+    remove: async () => ok({ id: conversationId }),
+    changed: () => {},
+  };
+  const main = renderToStaticMarkup(
+    <ConversationRow {...props} conversation={{ ...conversation, title: "<unsafe> long title" }} />,
+  );
+  assert.match(main, /aria-label="Manage chat: &lt;unsafe&gt; long title"/);
+  assert.match(main, /aria-haspopup="menu"/);
+  assert.match(main, /truncate/);
+  assert.match(main, /shrink-0/);
+  assert.match(main, new RegExp(`/chat\\?conversationId=${conversationId}`));
+  const scoped = renderToStaticMarkup(
+    <ConversationRow {...props} conversation={{ ...conversation, projectId }} showScope />,
+  );
+  assert.doesNotMatch(scoped, /Manage chat:/);
+  assert.match(scoped, /Project Chat/);
+  const row = readFileSync(new URL("./conversation-row.tsx", import.meta.url), "utf8");
+  assert.match(row, /pending\.current = true/);
+  assert.match(row, /window\.confirm/);
+  assert.match(row, /Already-saved project notes and their revision history will be kept/);
+  assert.match(row, /This cannot be undone/);
+});
+
 test("opening a new chat does not create anything; first submit creates once and sends fixed scope/title", async () => {
   for (const scoped of [false, true]) {
     const f = fixture({ project: scoped });
@@ -1090,6 +1213,119 @@ test("provider failure keeps its safe reason and displays saved failed partial t
   assert.equal(f.session.getSnapshot().messages.at(-1)!.status, "failed");
   assert.equal(f.session.getSnapshot().messages.at(-1)!.content, "Partial");
   assert.doesNotMatch(JSON.stringify(f.session.getSnapshot()), /SENTINEL/);
+});
+
+test("confirmed generation failures render natural UI-only inline notices, retaining partial output and exact retry protocol", async () => {
+  for (const code of [
+    "RATE_LIMITED",
+    "PROVIDER_TIMEOUT",
+    "PROVIDER_NETWORK",
+    "PROVIDER_REJECTED",
+    "EMPTY_RESPONSE",
+    "OUTPUT_LIMIT",
+  ] as const) {
+    for (const partial of ["", "Partial answer"]) {
+      let f!: ReturnType<typeof fixture>;
+      f = fixture({
+        existing: true,
+        fetch: async () => {
+          f.save("failed", partial);
+          return sse(
+            start() +
+              (partial ? delta(partial) : "") +
+              frame("error", {
+                code,
+                message: "private-provider-sentinel",
+                persistence: "confirmed",
+                status: "failed",
+              }),
+          );
+        },
+      });
+      f.session.setDraft(attempt.content);
+      await f.session.submit();
+      const state = f.session.getSnapshot();
+      const response = state.messages.at(-1)!;
+      const notice = replyFailureNotice(
+        response,
+        state.needsReconcile || !!state.attempt,
+        f.session.canSend,
+      );
+      assert.ok(notice);
+      assert.equal(response.failure, code);
+      assert.equal(response.content, partial); // No fabricated answer persisted or appended.
+      assert.equal(state.attempt, null);
+      assert.equal(f.session.canRetry, false);
+      assert.equal(f.session.canSend, true);
+      assert.ok(isGenerationFailure(code));
+      if (partial) assert.match(notice, /incomplete/);
+      if (code === "RATE_LIMITED") assert.match(notice, /temporarily busy.*try again later/);
+      else if (code === "PROVIDER_TIMEOUT") assert.match(notice, /took too long.*try again/);
+      else assert.match(notice, /couldn't complete.*send your message again/);
+      const markup = renderToStaticMarkup(
+        <>
+          {partial ? <MessageContent content={partial} /> : null}
+          <ReplyFailure notice={notice} />
+        </>,
+      );
+      assert.match(markup, /data-ui-notice="failure"/);
+      assert.match(markup, /aria-label="Reply status"/);
+      assert.doesNotMatch(markup, /role="alert"|private-provider|border-\[#71404c\]/);
+      await f.session.submit(true); // Terminal failure never re-infers the old ID.
+      assert.equal(f.sent.length, 1);
+      assert.equal(f.ids(), 1);
+    }
+  }
+});
+
+test("history-only failures never invent a provider cause, and uncertain delivery never invites new generation", async () => {
+  const saved = { ...pair("failed", "Partial")[1]!, persisted: true };
+  assert.match(replyFailureNotice(saved, false, true)!, /couldn't complete.*incomplete/);
+  assert.doesNotMatch(replyFailureNotice(saved, false, true)!, /busy|too long/);
+  assert.equal(replyFailureNotice({ ...saved, status: "pending" }, false, true), null);
+  assert.equal(replyFailureNotice({ ...saved, persisted: false }, false, true), null);
+  assert.equal(replyFailureNotice({ ...saved, status: "stopped" }, false, true), null);
+  assert.equal(replyFailureNotice({ ...saved, role: "user" }, false, true), null);
+  assert.match(replyFailureNotice(saved, true, false)!, /Reload saved history before continuing/);
+  assert.doesNotMatch(replyFailureNotice(saved, true, false)!, /Please send|Please try/);
+  const f = fixture({
+    existing: true,
+    fetch: async () =>
+      sse(
+        start() +
+          delta("Partial") +
+          frame("error", { code: "PERSISTENCE_FAILED", persistence: "unconfirmed" }),
+      ),
+    read: async () => unavailable(),
+  });
+  f.session.setDraft(attempt.content);
+  await f.session.submit();
+  assert.equal(f.session.getSnapshot().needsReconcile, true);
+  assert.equal(f.session.canSend, false);
+  assert.equal(f.session.canRetry, false);
+  assert.equal(replyFailureNotice(f.session.getSnapshot().messages.at(-1)!, true, false), null);
+  assert.equal(f.session.getSnapshot().messages.at(-1)!.content, "Partial");
+  assert.equal(f.sent.length, 1);
+  assert.ok(!isGenerationFailure("UNAUTHENTICATED") && !isGenerationFailure("PERSISTENCE_FAILED"));
+});
+
+test("confirmed terminal failure with unsuccessful history check asks for recovery, not duplicate generation", async () => {
+  const f = fixture({
+    existing: true,
+    fetch: async () =>
+      sse(
+        start() +
+          frame("error", { code: "RATE_LIMITED", persistence: "confirmed", status: "failed" }),
+      ),
+    read: async () => unavailable(),
+  });
+  f.session.setDraft(attempt.content);
+  await f.session.submit();
+  const response = f.session.getSnapshot().messages.at(-1)!;
+  const notice = replyFailureNotice(response, true, f.session.canSend)!;
+  assert.match(notice, /Reload saved history/);
+  assert.doesNotMatch(notice, /Please send|Please try/);
+  assert.equal(f.sent.length, 1);
 });
 
 test("network/read failure preserves same-ID recovery and blocks new turns until history is checked", async () => {
@@ -1516,7 +1752,7 @@ test("navigation focuses Main Chat while preserving discoverable legacy project 
   assert.match(screen, /includeProjectChats \? \{\} : \{ projectId: null \}/);
   assert.match(screen, /Include project chats/);
   assert.match(screen, /Main Chat · Search notes across your projects/);
-  assert.match(screen, /href=\{`\/chat\?conversationId=\$\{row\.id\}`\}/);
+  assert.match(screen, /<ConversationRow/); // Canonical history links are covered by the row render test.
   assert.match(screen, /No Main Chat threads yet/);
   const page = readFileSync(
     new URL("../../app/(workspace)/projects/[projectId]/page.tsx", import.meta.url),
@@ -1742,6 +1978,27 @@ function savedProposalView(): ChatView {
     messages: view.messages.map((m) => ({ ...m, proposal: m.proposal ? savedProposal : null })),
   };
 }
+
+test("late confirmation acknowledgements cannot resurrect a deleted session or its receipts", async () => {
+  let release!: (result: Awaited<ReturnType<NonNullable<Dependencies["confirm"]>>>) => void;
+  const waiting = new Promise<Awaited<ReturnType<NonNullable<Dependencies["confirm"]>>>>(
+    (resolve) => {
+      release = resolve;
+    },
+  );
+  const f = fixture({ existing: true, initial: ok(proposalView()), confirm: async () => waiting });
+  f.session.editProposal(proposal.id, { projectId });
+  const saving = f.session.confirmProposal(proposal.id);
+  f.session.retire();
+  release(ok(savedReceipt));
+  await saving;
+  assert.deepEqual(f.session.getSnapshot().proposalReceipts, {});
+  assert.deepEqual(f.session.getSnapshot().messages, []);
+  await f.session.confirmProposal(proposal.id);
+  await f.session.recoverProposal(proposal.id);
+  assert.equal(f.confirms.length, 1);
+  assert.equal(f.recoveries.length, 0);
+});
 
 test("explicit confirmation uses canonical edited fields and synchronously blocks double clicks and edits while saving", async () => {
   let release!: (result: Awaited<ReturnType<NonNullable<Dependencies["confirm"]>>>) => void;

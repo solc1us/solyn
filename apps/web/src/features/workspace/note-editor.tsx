@@ -125,19 +125,17 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
           }
         }}
       >
-        <div className="editor-toolbar mb-[20px] flex items-center justify-between gap-[16px] pb-[16px] [@media(max-width:760px)]:gap-[10px]">
+        <div className="editor-toolbar mb-[20px] flex items-center justify-end gap-[12px] pb-[16px] [@media(max-width:760px)]:gap-[10px]">
           <p className="save-indicator text-[13px] text-muted-foreground" role="status">
             {pending
               ? loadingLatest
                 ? "Loading…"
                 : "Saving…"
-              : state.savedFeedback
-                ? "Saved"
-                : dirty
-                  ? "Unsaved changes"
-                  : state.saved
-                    ? "All changes saved"
-                    : "New note"}
+              : dirty
+                ? "Unsaved changes"
+                : state.savedFeedback
+                  ? "Saved"
+                  : ""}
           </p>
           <Button
             type="submit"
@@ -211,7 +209,7 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
             <Textarea
               id="note-content"
               name="content"
-              className="form-control writing-area h-[420px] max-h-[65dvh] field-sizing-fixed resize-none overflow-y-auto text-[17px] leading-[1.65] [@media(max-width:760px)]:text-[16px]"
+              className="form-control writing-area h-[160px] max-h-[40dvh] field-sizing-fixed resize-none overflow-y-auto text-[17px] leading-[1.65] [@media(max-width:760px)]:text-[16px]"
               value={state.draft.content}
               onChange={(event) => change("content", event.target.value)}
               maxLength={100000}
@@ -219,15 +217,9 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
               spellCheck
               placeholder="Write your note…"
               aria-invalid={!!errors.content}
-              aria-describedby={`note-content-help${errors.content ? " note-content-error" : ""}`}
+              aria-describedby={errors.content ? "note-content-error" : undefined}
               autoComplete="off"
             />
-            <p
-              id="note-content-help"
-              className="field-help text-[12px] leading-[1.6] text-muted-foreground"
-            >
-              Plain text. Formatting and whitespace stay as you write them.
-            </p>
             <FieldError id="note-content-error" message={errors.content} />
           </div>
         </fieldset>
@@ -304,17 +296,13 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
             </Button>
           </section>
         ) : null}
-        <footer className="editor-metadata mt-[28px] flex flex-wrap gap-x-[22px] gap-y-[10px] border-t border-border pt-[18px] text-[12px] text-muted-foreground">
-          {state.saved ? (
-            <>
-              <span>Created {formatDate(state.saved.createdAt)}</span>
-              <span>Last saved {formatDate(state.saved.updatedAt)}</span>
-              <span>Version {state.saved.version}</span>
-            </>
-          ) : (
-            <span>Nothing is saved until you choose Create note.</span>
-          )}
-        </footer>
+        {state.saved ? (
+          <footer className="editor-metadata mt-[28px] flex flex-wrap gap-x-[22px] gap-y-[10px] border-t border-border pt-[18px] text-[12px] text-muted-foreground">
+            <span>Created {formatDate(state.saved.createdAt)}</span>
+            <span>Last saved {formatDate(state.saved.updatedAt)}</span>
+            <span>Version {state.saved.version}</span>
+          </footer>
+        ) : null}
       </form>
     </div>
   );

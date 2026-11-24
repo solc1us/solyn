@@ -1,5 +1,19 @@
 import { Fragment, memo } from "react";
 
+// UI status, deliberately outside model text and never a persisted answer.
+export function ReplyFailure({ notice }: { notice: string | null }) {
+  return notice ? (
+    <p
+      className="chat-failure mt-[8px] text-[13px] leading-[1.6] text-muted-foreground"
+      role="status"
+      aria-label="Reply status"
+      data-ui-notice="failure"
+    >
+      {notice}
+    </p>
+  ) : null;
+}
+
 function inline(text: string) {
   return text
     .split(/(`[^`\n]+`)/g)

@@ -3,8 +3,11 @@
 import { Button } from "@solyn/ui/components/button";
 import { FolderClosed, House, Menu, MessageSquare, X } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { startTransition, useEffect, useRef, useState } from "react";
+
+import { renameConversation, deleteConversation } from "../features/chat/actions";
+import { ConversationRow, useConversationRows } from "../features/chat/conversation-row";
 
 import SignOutButton from "./sign-out-button";
 
@@ -31,6 +34,8 @@ export default function WorkspaceShell({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+  const router = useRouter();
+  const threads = useConversationRows(recentConversations);
   const [open, setOpen] = useState(false);
   const toggle = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -116,7 +121,7 @@ export default function WorkspaceShell({
             Ask Solyn
           </Link>
         </nav>
-        {recentConversations.length ? (
+        {threads.length ? (
           <nav
             className="recent-conversations mt-[20px] grid gap-[3px]"
             aria-label="Recent Main Chat threads"
@@ -127,17 +132,14 @@ export default function WorkspaceShell({
             <p className="mx-[12px] mb-[4px] text-[12px] text-muted-foreground">
               Recent Main Chat threads
             </p>
-            {recentConversations.map((conversation) => (
-              <Link
-                className="nav-item grid min-h-[42px] items-center gap-px rounded-[7px] px-[12px] py-[7px] text-[13px] text-muted-foreground [&:hover]:bg-(--hover) [&:hover]:text-foreground [@media(max-width:760px)]:min-h-[44px]"
+            {threads.map((conversation) => (
+              <ConversationRow
                 key={conversation.id}
-                href={`/chat?conversationId=${conversation.id}`}
-              >
-                <span className="truncate">{conversation.title}</span>
-                <small className="text-[11px] text-muted-foreground">
-                  {conversation.projectId ? "Project Chat" : "Main Chat"}
-                </small>
-              </Link>
+                conversation={conversation}
+                rename={renameConversation}
+                remove={deleteConversation}
+                changed={() => startTransition(() => router.refresh())}
+              />
             ))}
           </nav>
         ) : null}

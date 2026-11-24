@@ -20,6 +20,12 @@
 
 Run `bun test apps/web/src/features/workspace/frontend.test.tsx` for offline reducer, validation, pagination, date and safe-rendering coverage. These tests do **not** establish authenticated browser or PostgreSQL integration.
 
+## P4.6F form refinement
+
+App-owned `.form-control` fields (including note search and proposal edits) and the chat composer now use background `#1c1e25` and normal border `#363a42`. Normal-border rules exclude focused/invalid fields so existing blue focus and error-first red borders retain authority. Shared primitives and login remain unchanged.
+
+Note and Project save actions sit at the upper right, with adjacent quiet unsaved/saving/meaningful-saved feedback. Clean forms have no permanent saved/new-state filler. Project's redundant bottom Cancel/footer and optional-description helper, Note's plain-text helper and unsaved new-note metadata filler are removed; labels, date guidance, saved timestamps/version, contextual validation, mutation errors and unsaved guards remain. Note content is now approximately 160px high (viewport capped), non-resizable and internally scrolling; full-width forms, exact content/date submission, optimistic versions and explicit conflict replacement are unchanged.
+
 ## P4.6E UI refinement
 
 New/Edit Note now fill their existing canvas content width, like Project Forms. Workspace/proposal fields share rounded primitive borders and an app-local raised neutral surface, with border-only focus and error-first invalid styling. Login and the shared Input/Textarea primitives are unchanged. Description, note content, read-only comparison and proposal textareas have fixed, viewport-bounded heights with internal scrolling and no drag resizing; the chat composer follows the same fixed-sizing policy.
