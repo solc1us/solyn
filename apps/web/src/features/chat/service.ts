@@ -211,8 +211,7 @@ export function createChatService({
       if (
         row.role !== "assistant" ||
         row.status !== "completed" ||
-        !projectId ||
-        parsed.some((ref) => ref.projectId !== projectId)
+        (projectId !== null && parsed.some((ref) => ref.projectId !== projectId))
       )
         throw new Error("Invalid stored source scope");
       refs.set(row.id, parsed);
@@ -225,19 +224,22 @@ export function createChatService({
             projectId: notes.projectId,
             title: notes.title,
             updatedAt: notes.updatedAt,
+            projectName: projects.name,
           })
           .from(notes)
           .innerJoin(projects, eq(projects.id, notes.projectId))
           .where(
             and(
               inArray(notes.id, ids),
-              eq(notes.projectId, projectId!),
+              projectId !== null ? eq(notes.projectId, projectId) : undefined,
               eq(projects.ownerId, ownerId),
             ),
           )
       : [];
     const available = new Map(
-      found.filter((note) => note.projectId === projectId).map((note) => [note.id, note]),
+      found
+        .filter((note) => projectId === null || note.projectId === projectId)
+        .map((note) => [note.id, note]),
     );
     return new Map(
       [...refs].map(([messageId, sources]) => [
@@ -245,12 +247,13 @@ export function createChatService({
         contracts.sourcesSchema.parse(
           sources.map((ref, index) => {
             const note = available.get(ref.noteId);
-            return note
+            return note && note.projectId === ref.projectId
               ? {
                   ordinal: index + 1,
                   state: "available",
                   noteId: note.id,
                   projectId: note.projectId,
+                  projectName: note.projectName,
                   title: note.title,
                   href: `/projects/${note.projectId}/notes/${note.id}`,
                   retrievedUpdatedAt: ref.retrievedUpdatedAt,
@@ -346,7 +349,10 @@ export function createChatService({
           }
           const now = await databaseNow(tx);
           if (status === "completed" && abandoned(response, now)) throw conflict();
-          if (sourceRefs?.some((ref) => ref.projectId !== conversation.projectId))
+          if (
+            conversation.projectId !== null &&
+            sourceRefs?.some((ref) => ref.projectId !== conversation.projectId)
+          )
             throw new ChatError("INVALID_INPUT", "Invalid response source scope.");
           const sources = await readSources(tx, ownerId, conversation.projectId, [
             { ...response, status, sourceRefs },

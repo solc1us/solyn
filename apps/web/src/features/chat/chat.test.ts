@@ -201,7 +201,7 @@ const sourceRead = (
   rows: unknown[][] = [[sourceNoteId, projectId, "Current authorized title", now]],
 ): Step => ({
   sql: /from "notes" inner join "projects"/,
-  rows,
+  rows: rows.map((row) => [...row, "Authorized project"]),
   inspect: (sql, params) => {
     assert.match(sql, /"notes"\."id" in \(/);
     assert.match(sql, /"notes"\."project_id" = \$/);
@@ -242,6 +242,7 @@ test("sources complete atomically with content/status/activity and expose only a
     ...sourceRefs[0],
     ordinal: 1,
     state: "available",
+    projectName: "Authorized project",
     title: "Current authorized title",
     href: `/projects/${projectId}/notes/${sourceNoteId}`,
     updatedAt: now.toISOString(),
@@ -343,20 +344,18 @@ test("sources contracts reject malformed, duplicate, excessive or client/model-p
 });
 
 test("sources new completion rejects different project scope and unavailable notes before updating", async () => {
-  for (const project of [null, nextTurnId]) {
-    const f = fixture([
-      begin,
-      { ...lock, rows: [[conversationId, project, "Chat", now, now]] },
-      replay([messageRow()]),
-      clock(),
-      rollback,
-    ]);
-    failure(
-      await f.service.completeResponse({ ...turnInput, content: "Answer", sourceRefs }),
-      "INVALID_INPUT",
-    );
-    exhausted(f);
-  }
+  const foreignScope = fixture([
+    begin,
+    { ...lock, rows: [[conversationId, nextTurnId, "Chat", now, now]] },
+    replay([messageRow()]),
+    clock(),
+    rollback,
+  ]);
+  failure(
+    await foreignScope.service.completeResponse({ ...turnInput, content: "Answer", sourceRefs }),
+    "INVALID_INPUT",
+  );
+  exhausted(foreignScope);
   const unavailable = fixture([
     begin,
     sourceLock,
@@ -420,6 +419,7 @@ test("sources history batches authorization, retains ordinal gaps and binds meta
     ...secondRef,
     ordinal: 2,
     state: "available",
+    projectName: "Authorized project",
     title: "Second note, now renamed",
     href: `/projects/${projectId}/notes/${nextTurnId}`,
     updatedAt: now.toISOString(),
@@ -458,6 +458,242 @@ test("sources corrupt stored JSON fails safely without partial trusted links", a
   ]);
   failure(await history.service.getConversation({ conversationId }), "UNAVAILABLE");
   exhausted(history);
+});
+
+const crossNoteId = "88888888-8888-4888-8888-888888888888";
+const crossRefs: contracts.SourceRef[] = [
+  ...sourceRefs,
+  { noteId: crossNoteId, projectId: nextTurnId, retrievedUpdatedAt: now.toISOString() },
+];
+const crossRows = [
+  [sourceNoteId, projectId, "Decision A", now, "Orion"],
+  [crossNoteId, nextTurnId, "Decision B", now, "Vega"],
+];
+const crossSourceRead = (rows: unknown[][] = crossRows): Step => ({
+  sql: /from "notes" inner join "projects"/,
+  rows,
+  inspect: (sql, params) => {
+    assert.match(sql, /"projects"\."id" = "notes"\."project_id"/);
+    assert.match(sql, /"projects"\."owner_id" = \$/);
+    assert.match(sql, /"notes"\."id" in \(/);
+    assert.match(sql, /"projects"\."name"/);
+    assert.ok(
+      params.includes("user-a") && params.includes(sourceNoteId) && params.includes(crossNoteId),
+    );
+    assert.doesNotMatch(sql, /"notes"\."project_id" = \$|"content"|"excerpt"/);
+  },
+});
+
+test("sources general completion atomically accepts multiple owned projects and projects current names", async () => {
+  const f = fixture([
+    begin,
+    lock,
+    replay([messageRow()]),
+    clock(),
+    crossSourceRead(),
+    {
+      ...terminal("completed", "Answer"),
+      rows: [referencedRow(crossRefs)],
+      inspect: (sql, params) => {
+        messageScoped(sql, params);
+        assert.ok(params.includes(JSON.stringify(crossRefs)));
+        assert.match(sql, /"source_refs" = \$/);
+      },
+    },
+    touch,
+    commit,
+  ]);
+  const result = data(
+    await f.service.completeResponse({ ...turnInput, content: "Answer", sourceRefs: crossRefs }),
+  );
+  assert.deepEqual(
+    result.sources.map((source) =>
+      source.state === "available"
+        ? [source.ordinal, source.projectId, source.projectName, source.href]
+        : source,
+    ),
+    [
+      [1, projectId, "Orion", `/projects/${projectId}/notes/${sourceNoteId}`],
+      [2, nextTurnId, "Vega", `/projects/${nextTurnId}/notes/${crossNoteId}`],
+    ],
+  );
+  assert.ok(!("sourceRefs" in result));
+  exhausted(f);
+});
+
+test("sources general completion rejects inaccessible notes and incorrect owned note/project associations before any write", async () => {
+  for (const rows of [
+    [],
+    [crossRows[1]!],
+    [[sourceNoteId, nextTurnId, "Wrong parent", now, "Vega"], crossRows[1]!],
+  ]) {
+    const f = fixture([
+      begin,
+      lock,
+      replay([messageRow()]),
+      clock(),
+      crossSourceRead(rows),
+      rollback,
+    ]);
+    const result = await f.service.completeResponse({
+      ...turnInput,
+      content: "Answer",
+      sourceRefs: crossRefs,
+    });
+    failure(result, "NOT_FOUND");
+    assert.ok(!f.calls.some((sql) => /^(insert|update)/.test(sql)));
+    assert.doesNotMatch(JSON.stringify(result), /Wrong parent|Orion|Vega|sourceRefs/);
+    exhausted(f);
+  }
+});
+
+test("sources general exact completion replay reauthorizes each project and never resurrects inaccessible references", async () => {
+  const f = fixture([
+    begin,
+    lock,
+    replay([referencedRow(crossRefs)]),
+    crossSourceRead([crossRows[1]!]),
+    commit,
+  ]);
+  const result = data(
+    await f.service.completeResponse({ ...turnInput, content: "Answer", sourceRefs: crossRefs }),
+  );
+  assert.deepEqual(result.sources[0], { ordinal: 1, state: "unavailable" });
+  assert.equal(result.sources[1]!.state, "available");
+  if (result.sources[1]!.state === "available")
+    assert.equal(result.sources[1]!.projectName, "Vega");
+  assert.ok(!f.calls.some((sql) => /^(insert|update)/.test(sql)));
+  exhausted(f);
+  const changed = fixture([begin, lock, replay([referencedRow(crossRefs)]), rollback]);
+  failure(
+    await changed.service.completeResponse({
+      ...turnInput,
+      content: "Answer",
+      sourceRefs: [...crossRefs].reverse(),
+    }),
+    "CONFLICT",
+  );
+  exhausted(changed);
+});
+
+test("sources general history preserves ordinals but hides foreign, deleted or moved note/project metadata", async () => {
+  const f = fixture([
+    { sql: /^begin isolation level repeatable read read only$/ },
+    { sql: /from "chat_conversations"/, rows: [conversationRow], inspect: scoped },
+    {
+      sql: /from "chat_messages".*order by/,
+      rows: [referencedRow(crossRefs)],
+      inspect: (_sql, params) => assert.deepEqual(params.slice(-2), [10, 50]),
+    },
+    pending(),
+    clock(),
+    { sql: /from "note_proposals"/ },
+    crossSourceRead([
+      [sourceNoteId, nextTurnId, "Do not expose moved title", now, "Do not expose moved project"],
+      crossRows[1]!,
+    ]),
+    commit,
+  ]);
+  const view = data(
+    await f.service.getConversation({ conversationId, latest: true, limit: 10, offset: 50 }),
+  );
+  assert.deepEqual(view.messages[0]!.sources[0], { ordinal: 1, state: "unavailable" });
+  assert.equal(view.messages[0]!.sources[1]!.state, "available");
+  assert.doesNotMatch(JSON.stringify(view), /Do not expose|sourceRefs/);
+  exhausted(f);
+});
+
+test("sources general history reauthorizes foreign references using the current account without revealing project names", async () => {
+  const f = fixture(
+    [
+      begin,
+      {
+        sql: /from "chat_conversations"/,
+        rows: [conversationRow],
+        inspect: (_sql, params) =>
+          assert.ok(params.includes("user-b") && !params.includes("user-a")),
+      },
+      { sql: /from "chat_messages".*order by/, rows: [referencedRow(crossRefs)] },
+      { sql: /from "chat_messages".*"status" = \$.*limit \$/ },
+      clock(),
+      { sql: /from "note_proposals"/ },
+      {
+        sql: /from "notes" inner join "projects"/,
+        inspect: (sql, params) => {
+          assert.match(sql, /"projects"\."id" = "notes"\."project_id"/);
+          assert.match(sql, /"projects"\."owner_id" = \$/);
+          assert.ok(params.includes("user-b") && !params.includes("user-a"));
+        },
+      },
+      commit,
+    ],
+    "user-b",
+  );
+  const view = data(await f.service.getConversation({ conversationId }));
+  assert.deepEqual(view.messages[0]!.sources, [
+    { ordinal: 1, state: "unavailable" },
+    { ordinal: 2, state: "unavailable" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(view), /Orion|Vega|sourceRefs|projectName/);
+  exhausted(f);
+});
+
+test("sources general completed begin replay returns fresh cross-project projections without writes", async () => {
+  const f = fixture([
+    begin,
+    lock,
+    replay([messageRow("user", "completed", content), referencedRow(crossRefs)]),
+    clock(),
+    { sql: /from "note_proposals"/ },
+    crossSourceRead(),
+    commit,
+  ]);
+  const result = data(await f.service.beginTurn(beginInput));
+  assert.equal(result.replayed, true);
+  assert.deepEqual(
+    result.assistant.sources.map((source) =>
+      source.state === "available" ? source.projectName : null,
+    ),
+    ["Orion", "Vega"],
+  );
+  assert.ok(!f.calls.some((sql) => /^(insert|update)/.test(sql)));
+  exhausted(f);
+});
+
+test("sources general commit failure requests rollback without confirming references", async () => {
+  const f = fixture([
+    begin,
+    lock,
+    replay([messageRow()]),
+    clock(),
+    crossSourceRead(),
+    { ...terminal("completed", "Answer"), rows: [referencedRow(crossRefs)] },
+    { ...touch, error: new Error("private project detail") },
+    rollback,
+  ]);
+  const result = await f.service.completeResponse({
+    ...turnInput,
+    content: "Answer",
+    sourceRefs: crossRefs,
+  });
+  failure(result, "UNAVAILABLE");
+  assert.doesNotMatch(JSON.stringify(result), /Orion|Vega|sourceRefs|private project/);
+  exhausted(f);
+});
+
+test("sources project history still rejects stored cross-project references without projecting any metadata", async () => {
+  const f = fixture([
+    begin,
+    { sql: /from "chat_conversations"/, rows: sourceLock.rows },
+    { sql: /from "chat_messages".*order by/, rows: [referencedRow(crossRefs)] },
+    pending(),
+    clock(),
+    { sql: /from "note_proposals"/ },
+    rollback,
+  ]);
+  failure(await f.service.getConversation({ conversationId }), "UNAVAILABLE");
+  assert.ok(!f.calls.some((sql) => sql.includes('from "notes"')));
+  exhausted(f);
 });
 
 test("sources legacy NULL completion/replay remains source-free", async () => {

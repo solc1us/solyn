@@ -140,6 +140,7 @@ function fixture(
     provider?: Dependencies["model"];
     project?: boolean;
     searchNotes?: Dependencies["workspace"]["searchNotes"];
+    searchOwnedNotes?: Dependencies["workspace"]["searchOwnedNotes"];
   } = {},
 ) {
   const calls: { operation: string; input: unknown }[] = [];
@@ -209,6 +210,10 @@ function fixture(
       searchNotes: async (input) => {
         calls.push({ operation: "search", input });
         return options.searchNotes ? options.searchNotes(input) : ok([]);
+      },
+      searchOwnedNotes: async (input) => {
+        calls.push({ operation: "owner-search", input });
+        return options.searchOwnedNotes ? options.searchOwnedNotes(input) : ok([]);
       },
     },
     origin,
@@ -334,7 +339,7 @@ test("successful stream uses fixed model, exact persisted input and confirms ful
     content: [{ type: "text", text: user.content }],
     providerOptions: undefined,
   });
-  assert.equal(call.tools?.length, 1);
+  assert.equal(call.tools?.length, 2);
   assert.equal(call.tools?.[0]?.type, "function");
   assert.ok(PROVIDER_TIMEOUT_MS < PENDING_TIMEOUT_MS);
 });
@@ -854,8 +859,10 @@ test("real Groq adapter uses only approved model/options and performs one mocked
           assert.equal("reasoning_format" in body, false);
           assert.equal("include_reasoning" in body, false);
           assert.equal(body.reasoning_effort, "low");
-          assert.equal(body.tools?.length, 1);
-          assert.equal(body.tools[0].function.name, "prepareNote");
+          assert.deepEqual(
+            body.tools.map((tool: { function: { name: string } }) => tool.function.name).sort(),
+            ["prepareNote", "searchNotes"],
+          );
           assert.equal(body.parallel_tool_calls, false);
           // A real SDK API-error path, not an injected high-level service result.
           return Response.json(
@@ -1029,7 +1036,11 @@ test("real Groq adapter accepts fragmented prepareNote arguments with one mocked
         fetch: async (_url, init) => {
           fetches++;
           const body = JSON.parse(init!.body as string);
-          assert.equal(body.tools[0].function.name, "prepareNote");
+          assert.ok(
+            body.tools.some(
+              (tool: { function: { name: string } }) => tool.function.name === "prepareNote",
+            ),
+          );
           assert.equal(body.parallel_tool_calls, false);
           const raw = JSON.stringify(noteDraft);
           const chunk = (delta: unknown, finish_reason: string | null = null) => ({
@@ -1078,6 +1089,7 @@ const retrievedSource: SourceView = {
   state: "available",
   noteId: retrievedNote.id,
   projectId: otherTurn,
+  projectName: "Owned project",
   title: "Current authorized title",
   href: `/projects/${otherTurn}/notes/${retrievedNote.id}`,
   retrievedUpdatedAt: now.toISOString(),
@@ -1206,18 +1218,104 @@ test("retrieval empty success reaches the final model distinctly from search fai
   assert.equal(provider.doStreamCalls.length, 2);
 });
 
-test("retrieval is not advertised or executable in general chat", async () => {
-  const normal = fixture();
-  await (await normal.post(request())).text();
-  assert.deepEqual(
-    normal.provider.doStreamCalls[0]!.tools?.map((entry) => entry.name),
-    ["prepareNote"],
-  );
-  const f = fixture({ model: toolModel({ query: "budget" }, { name: "searchNotes" }) });
+test("retrieval general chat exposes the same query-only tool and uses owner search without a project selector", async () => {
+  const f = fixture({ model: retrievalModel() });
   const parts = events(await (await f.post(request())).text());
-  assert.equal(parts.at(-1)!.data.code, "PROVIDER_REJECTED");
-  assert.equal(f.calls.filter((call) => call.operation === "search").length, 0);
-  assert.equal(f.provider.doStreamCalls.length, 1);
+  assert.equal(parts.at(-1)!.event, "finish");
+  assert.deepEqual(f.calls.find((call) => call.operation === "owner-search")!.input, {
+    query: "budget",
+    limit: 5,
+    offset: 0,
+  });
+  assert.ok(!f.calls.some((call) => call.operation === "search"));
+  assert.equal(f.provider.doStreamCalls.length, 2);
+});
+
+const ownedRetrieval = { ...retrievedNote, projectName: "Orion" };
+test("retrieval general chat captures all authorized project origins and persists references from results only", async () => {
+  const second = { ...ownedRetrieval, id: turnId, projectId: conversationId, projectName: "Vega" };
+  const projected: SourceView[] = [
+    retrievedSource,
+    {
+      ...retrievedSource,
+      ordinal: 2,
+      noteId: turnId,
+      projectId: conversationId,
+      projectName: "Vega",
+      href: `/projects/${conversationId}/notes/${turnId}`,
+    },
+  ];
+  let captured: unknown;
+  const f = fixture({
+    model: retrievalModel(),
+    searchOwnedNotes: async () => ok([ownedRetrieval, second]),
+    chat: {
+      completeResponse: async (input) => {
+        captured = input;
+        return ok({ ...assistant, content: "Answer", status: "completed", sources: projected });
+      },
+    },
+  });
+  const parts = events(await (await f.post(request())).text());
+  assert.deepEqual(
+    (captured as { sourceRefs: unknown }).sourceRefs,
+    [ownedRetrieval, second].map((note) => ({
+      noteId: note.id,
+      projectId: note.projectId,
+      retrievedUpdatedAt: now.toISOString(),
+    })),
+  );
+  assert.deepEqual(parts.at(-1)!.data.sources, projected);
+  assert.ok(!f.calls.some((call) => call.operation === "search"));
+  assert.equal(f.calls.filter((call) => call.operation === "owner-search").length, 1);
+  assert.equal(f.provider.doStreamCalls.length, 2);
+  assert.equal(f.provider.doStreamCalls[1]!.maxOutputTokens, MAX_OUTPUT_TOKENS - 5);
+  const data = JSON.stringify(
+    f.provider.doStreamCalls[1]!.prompt.filter((message) => message.role === "tool"),
+  );
+  assert.match(data, /Orion/);
+  assert.match(data, /Vega/);
+  assert.deepEqual(f.provider.doStreamCalls[1]!.toolChoice, { type: "none" });
+});
+
+test("retrieval general chat rejects missing or invalid project metadata and malformed bounded results", async () => {
+  type Rows = Extract<
+    Awaited<ReturnType<Dependencies["workspace"]["searchOwnedNotes"]>>,
+    { ok: true }
+  >["data"];
+  for (const rows of [
+    [retrievedNote],
+    [{ ...ownedRetrieval, projectName: " " }],
+    [{ ...ownedRetrieval, projectName: "x".repeat(201) }],
+    [{ ...ownedRetrieval, projectName: "bad\0name" }],
+    [{ ...ownedRetrieval, projectId: "not-a-uuid" }],
+    [{ ...ownedRetrieval, updatedAt: "not-a-date" }],
+    [{ ...ownedRetrieval, ownerId: "foreign" }],
+    [{ ...ownedRetrieval, content: "Full note" }],
+    [{ ...ownedRetrieval, excerpt: "x".repeat(321) }],
+    [ownedRetrieval, ownedRetrieval],
+    Array.from({ length: 6 }, () => ownedRetrieval),
+  ]) {
+    const f = fixture({ model: retrievalModel(), searchOwnedNotes: async () => ok(rows as Rows) });
+    const parts = events(await (await f.post(request())).text());
+    assert.equal(parts.at(-1)!.data.code, "SEARCH_UNAVAILABLE");
+    assert.equal(f.provider.doStreamCalls.length, 1);
+    assert.ok(!f.calls.some((call) => call.operation === "complete"));
+  }
+});
+
+test("retrieval general chat cannot perform a second search or tools in the final inference", async () => {
+  for (const provider of [
+    retrievalModel(toolModel({ query: "NFC" }, { name: "searchNotes", count: 2 })),
+    retrievalModel(undefined, toolModel({ query: "again" }, { name: "searchNotes" })),
+  ]) {
+    const f = fixture({ model: provider, searchOwnedNotes: async () => ok([ownedRetrieval]) });
+    const parts = events(await (await f.post(request())).text());
+    assert.equal(parts.at(-1)!.data.code, "PROVIDER_REJECTED");
+    assert.equal(f.calls.filter((call) => call.operation === "owner-search").length, 1);
+    assert.ok(provider.doStreamCalls.length <= 2);
+    assert.ok(!f.calls.some((call) => call.operation === "complete"));
+  }
 });
 
 for (const input of [
@@ -1231,29 +1329,41 @@ for (const input of [
   { query: "budget", offset: 20 },
 ]) {
   test(`retrieval rejects invalid or model-controlled search fields ${JSON.stringify(input).slice(0, 80)}`, async () => {
-    const f = fixture({ project: true, model: toolModel(input, { name: "searchNotes" }) });
-    const parts = events(await (await f.post(request())).text());
-    assert.equal(parts.at(-1)!.data.code, "PROVIDER_REJECTED");
-    assert.ok(!f.calls.some((call) => ["search", "complete", "proposal"].includes(call.operation)));
-    assert.equal(f.provider.doStreamCalls.length, 1);
+    for (const project of [false, true]) {
+      const f = fixture({ project, model: toolModel(input, { name: "searchNotes" }) });
+      const parts = events(await (await f.post(request())).text());
+      assert.equal(parts.at(-1)!.data.code, "PROVIDER_REJECTED");
+      assert.ok(
+        !f.calls.some((call) =>
+          ["search", "owner-search", "complete", "proposal"].includes(call.operation),
+        ),
+      );
+      assert.equal(f.provider.doStreamCalls.length, 1);
+    }
   });
 }
 
 for (const code of ["UNAUTHENTICATED", "NOT_FOUND", "UNAVAILABLE"] as const) {
   test(`retrieval ${code} fails safely without pretending search found no results`, async () => {
-    const f = fixture({
-      project: true,
-      model: retrievalModel(),
-      searchNotes: async () => denied(code),
-    });
-    const text = await (await f.post(request())).text();
-    const parts = events(text);
-    assert.equal(parts.at(-1)!.data.code, code === "UNAUTHENTICATED" ? code : "SEARCH_UNAVAILABLE");
-    assert.equal(parts.at(-1)!.data.status, "failed");
-    assert.equal(safeIssue(parts.at(-1)!.data.code), parts.at(-1)!.data.code);
-    assert.equal(f.provider.doStreamCalls.length, 1);
-    assert.ok(!f.calls.some((call) => ["complete", "proposal"].includes(call.operation)));
-    assert.doesNotMatch(text, /internal safe error|found no matching/);
+    for (const project of [false, true]) {
+      const f = fixture({
+        project,
+        model: retrievalModel(),
+        searchNotes: async () => denied(code),
+        searchOwnedNotes: async () => denied(code),
+      });
+      const text = await (await f.post(request())).text();
+      const parts = events(text);
+      assert.equal(
+        parts.at(-1)!.data.code,
+        code === "UNAUTHENTICATED" ? code : "SEARCH_UNAVAILABLE",
+      );
+      assert.equal(parts.at(-1)!.data.status, "failed");
+      assert.equal(safeIssue(parts.at(-1)!.data.code), parts.at(-1)!.data.code);
+      assert.equal(f.provider.doStreamCalls.length, 1);
+      assert.ok(!f.calls.some((call) => ["complete", "proposal"].includes(call.operation)));
+      assert.doesNotMatch(text, /internal safe error|found no matching/);
+    }
   });
 }
 
@@ -1789,18 +1899,19 @@ test("behavior policy project guidance prioritizes literal retrieval and qualifi
   assert.deepEqual(call.tools?.map((entry) => entry.name).sort(), ["prepareNote", "searchNotes"]);
 });
 
-test("behavior policy general chat retains no retrieval and explicit project selection", async () => {
+test("behavior policy general chat allows owner-wide comparison but preserves explicit project selection for notes", async () => {
   const { instructions, call } = await policyCall(false);
+  assert.match(instructions, /across all projects owned by the authenticated user/);
   assert.match(
     instructions,
-    /No project note search or stored notes are available in general chat/,
+    /compare information from different projects.*distinguish their origins/,
   );
-  assert.match(instructions, /Never claim to have searched or read them/);
-  assert.match(instructions, /open the relevant project chat for retrieval/);
-  assert.match(instructions, /never choose a project from model text/);
-  assert.doesNotMatch(instructions, /call searchNotes/);
-  assert.deepEqual(
-    call.tools?.map((entry) => entry.name),
-    ["prepareNote"],
+  assert.match(instructions, /project names from retrieved results/);
+  assert.match(
+    instructions,
+    /not that the entire project has no relevant notes or that all projects lack information/,
   );
+  assert.match(instructions, /general chat.*explicitly select the project before confirmation/);
+  assert.doesNotMatch(instructions, /No project note search|open the relevant project chat/);
+  assert.deepEqual(call.tools?.map((entry) => entry.name).sort(), ["prepareNote", "searchNotes"]);
 });

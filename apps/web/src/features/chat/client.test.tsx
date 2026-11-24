@@ -20,6 +20,7 @@ import { ProposalPreview } from "./proposal-preview";
 import { PROPOSAL_MESSAGE, type ProposalView, type SourceView } from "./contracts";
 import {
   consumeChatResponse,
+  sourcesMatchMessage,
   parseSSE,
   TransportFailure,
   type Attempt,
@@ -202,6 +203,7 @@ const source: SourceView = {
   state: "available",
   noteId: sourceNoteId,
   projectId,
+  projectName: "Authorized <script>project</script>",
   title: "Current <script>alert('title')</script>",
   href: `/projects/${projectId}/notes/${sourceNoteId}`,
   retrievedUpdatedAt: now.toISOString(),
@@ -269,6 +271,10 @@ test("sources transport rejects excessive, malformed, noncanonical or misattribu
     [{ ...source, href: "https://foreign.invalid" }],
     [{ ...source, noteId: "fake" }],
     [{ ...source, updatedAt: "invalid" }],
+    [{ ...source, projectName: undefined }],
+    [{ ...source, projectName: " " }],
+    [{ ...source, projectName: "x".repeat(201) }],
+    [{ ordinal: 1, state: "unavailable", projectName: "Hidden project" }],
     [{ ordinal: 1, state: "unavailable", noteId: sourceNoteId }],
     Array.from({ length: 6 }, (_, index) => ({ ordinal: index + 1, state: "unavailable" })),
     [source, { ...source, ordinal: 2 }],
@@ -517,7 +523,6 @@ test("sources denied or corrupt history hides old links and blocks unsupported a
   }
   for (const view of [
     otherView,
-    { ...sourceHistory(), conversation: { ...conversation, projectId: null } },
     sourceHistory([
       {
         ...source,
@@ -532,6 +537,133 @@ test("sources denied or corrupt history hides old links and blocks unsupported a
   }
 });
 
+const crossSources: SourceView[] = [
+  source,
+  {
+    ...source,
+    ordinal: 2,
+    noteId: assistantId,
+    projectId: conversationId,
+    projectName: "Vega",
+    title: "Second decision",
+    href: `/projects/${conversationId}/notes/${assistantId}`,
+  },
+];
+function generalSourceHistory(sources: SourceView[] = crossSources): ChatView {
+  const view = sourceHistory(sources);
+  return { ...view, conversation: { ...view.conversation, projectId: null }, project: null };
+}
+
+test("sources null scope still validates canonical references, metadata and completed assistant identity", () => {
+  const message = {
+    role: "assistant" as const,
+    status: "completed" as const,
+    sources: crossSources,
+  };
+  assert.equal(sourcesMatchMessage(message, null), true);
+  assert.equal(sourcesMatchMessage(message, projectId), false);
+  for (const sources of [
+    [{ ...source, href: "/forged" }],
+    [{ ...source, projectName: "" }],
+    [{ ...source, projectId: "bad" }],
+    [{ ...source, updatedAt: "bad" }],
+    [source, { ...source, ordinal: 2 }],
+  ])
+    assert.equal(sourcesMatchMessage({ ...message, sources }, null), false);
+  for (const patch of [{ role: "user" as const }, { status: "failed" as const }, { proposal }])
+    assert.equal(sourcesMatchMessage({ ...message, ...patch }, null), false);
+});
+
+test("sources general transport accepts multi-project finish and exact-message replay", async () => {
+  const view = generalSourceHistory();
+  for (const response of [
+    sse(start() + delta() + sourceFinish(crossSources)),
+    Response.json({
+      ok: true,
+      replayed: true,
+      abandoned: false,
+      user: view.messages[0],
+      assistant: view.messages[1],
+    }),
+  ]) {
+    const outcome = await consumeChatResponse(
+      response,
+      attempt,
+      () => {},
+      new AbortController().signal,
+    );
+    const sources =
+      outcome.kind === "finish"
+        ? outcome.sources
+        : outcome.kind === "replay"
+          ? outcome.assistant.sources
+          : undefined;
+    assert.deepEqual(sources, crossSources);
+  }
+});
+
+test("sources general finish survives fresh load, reload and cached-session reconciliation without stale route restoration", async () => {
+  let latest = generalSourceHistory();
+  const f = fixture({
+    existing: true,
+    read: async () => ok(latest),
+    fetch: async () => sse(start() + delta() + sourceFinish(crossSources)),
+  });
+  f.session.setDraft(attempt.content);
+  await f.session.submit();
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, crossSources);
+  await f.session.reload();
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, crossSources);
+  const fresh = fixture({ existing: true, initial: ok(generalSourceHistory()) });
+  assert.deepEqual(fresh.session.getSnapshot().messages.at(-1)!.sources, crossSources);
+  assert.equal(fresh.session.getSnapshot().needsReconcile, false);
+  assert.equal(fresh.reads.length, 0);
+  latest = generalSourceHistory([{ ordinal: 1, state: "unavailable" }, crossSources[1]!]);
+  f.session.invalidateSources();
+  f.session.adopt(ok(generalSourceHistory()));
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, []);
+  await until(() => f.session.getSnapshot().phase === "idle");
+  assert.deepEqual(
+    f.session.getSnapshot().messages.at(-1)!.sources,
+    latest.messages.at(-1)!.sources,
+  );
+  assert.equal(f.sent.length, 1);
+});
+
+test("sources general lost-finish recovery restores sources but denied authorization clears every project", async () => {
+  let denied = false;
+  const f = fixture({
+    existing: true,
+    fetch: async () => sse(start() + delta()),
+    read: async () => (denied ? unavailable() : ok(generalSourceHistory())),
+  });
+  f.session.setDraft(attempt.content);
+  await f.session.submit();
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, crossSources);
+  assert.equal(f.sent.length, 1);
+  denied = true;
+  await f.session.reload();
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, []);
+  assert.equal(f.session.getSnapshot().needsReconcile, true);
+});
+
+test("sources general footer labels both authorized projects and hides unavailable project metadata", () => {
+  const message = { ...generalSourceHistory().messages[1]!, persisted: true };
+  const html = renderToStaticMarkup(<RetrievedNotes message={message} />);
+  assert.match(html, /Authorized &lt;script&gt;project/);
+  assert.match(html, /Vega/);
+  assert.equal((html.match(/<a /g) ?? []).length, 2);
+  assert.doesNotMatch(html, /<script>/);
+  const unavailableHtml = renderToStaticMarkup(
+    <RetrievedNotes
+      message={{ ...message, sources: [{ ordinal: 1, state: "unavailable" }, crossSources[1]!] }}
+    />,
+  );
+  assert.doesNotMatch(unavailableHtml, /Authorized|Current|88888888/);
+  assert.match(unavailableHtml, /Note unavailable/);
+  assert.match(unavailableHtml, /Vega/);
+});
+
 test("sources footer escapes titles, preserves unavailable positions and does not link model citations", () => {
   const message = { ...sourceHistory().messages[1]!, persisted: true };
   const html = renderToStaticMarkup(
@@ -541,6 +673,7 @@ test("sources footer escapes titles, preserves unavailable positions and does no
   );
   assert.match(html, /Retrieved notes/);
   assert.match(html, /Current &lt;script&gt;/);
+  assert.match(html, /Authorized &lt;script&gt;project/);
   assert.match(html, /Note unavailable/);
   assert.match(html, /current note versions, not saved snapshots/);
   assert.equal((html.match(/<a /g) ?? []).length, 1);

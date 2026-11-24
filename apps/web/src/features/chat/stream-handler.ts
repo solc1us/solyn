@@ -14,7 +14,7 @@ import {
 import { z } from "zod";
 
 import type { createWorkspaceService } from "../workspace/service";
-import { uuid } from "../workspace/contracts";
+import { createProjectInput, uuid } from "../workspace/contracts";
 import {
   isChatText,
   prepareNoteInput,
@@ -47,6 +47,7 @@ const retrievalNotes = z
     z.strictObject({
       id: uuid,
       projectId: uuid,
+      projectName: createProjectInput.shape.name.refine(isChatText).optional(),
       title: prepareNoteInput.shape.title,
       excerpt: z
         .string()
@@ -203,7 +204,7 @@ function readWithAbort<T>(
 // Internal test seam; the route supplies only trusted server configuration/session.
 export function createChatStreamHandler(dependencies: {
   chat: Chat;
-  workspace: Pick<ReturnType<typeof createWorkspaceService>, "searchNotes">;
+  workspace: Pick<ReturnType<typeof createWorkspaceService>, "searchNotes" | "searchOwnedNotes">;
   getSession: (request: Request) => Promise<{ user: { id: string } } | null>;
   getApiKey: () => string | undefined;
   origin: string;
@@ -323,59 +324,55 @@ export function createChatStreamHandler(dependencies: {
                   "prepareNote only proposes an editable draft; it cannot save a note. Never claim a draft was saved: actual saving requires explicit user confirmation and backend success. For prepareNote, noteDate must be null unless a literal YYYY-MM-DD date is supplied in the current user message; unknown or relative dates stay null, never infer yesterday's or today's date. Return all four draft fields, using null for unknown hint/date. In project chat use that project's exact name or null as projectHint; in general chat the user must explicitly select the project before confirmation.\n" +
                   "Keep one principal action per turn. If multiple incompatible actions are requested, clarify which should happen first.\n" +
                   (projectId
-                    ? "For questions about stored project knowledge, call searchNotes once with a distinctive literal identifier or short keyword/substring, such as ORION-42 or NFC, not a complete question about NFC approval. It searches only this conversation's project, at most five excerpts, not full notes. Never claim to have searched in this turn unless this turn's tool succeeded. Use the tool's reference data to answer, not model memory or unsupported history claims. An empty result means only this available search found no matching information, not that the entire project has no relevant notes. Search failure is not an empty result. Retrieval never saves notes. After retrieval give a text answer only, with no further tools. The interface separately lists retrieved notes, not proof of every claim. Do not generate citation markers, IDs or note URLs."
-                    : "No project note search or stored notes are available in general chat. Never claim to have searched or read them. Ask the user to open the relevant project chat for retrieval; never choose a project from model text."),
+                    ? "searchNotes searches only this conversation's project, at most five excerpts, not full notes. Do not search other projects. "
+                    : "searchNotes may search notes across all projects owned by the authenticated user, at most five excerpts, not full notes. You may compare information from different projects; distinguish their origins using project names from retrieved results when relevant. ") +
+                  "For questions about stored project knowledge, call searchNotes once with a distinctive literal identifier or short keyword/substring, such as ORION-42 or NFC, not a complete question about NFC approval. Never claim to have searched in this turn unless this turn's tool succeeded. Use the tool's reference data to answer, not model memory or unsupported history claims. An empty result means only this available search found no matching information, not that the entire project has no relevant notes or that all projects lack information. Search failure is not an empty result. Retrieval never saves notes. After retrieval give a text answer only, with no further tools. The interface separately lists retrieved notes, not proof of every claim. Do not generate citation markers, IDs or note URLs.",
                 tools: {
-                  ...(projectId
-                    ? {
-                        searchNotes: tool({
-                          description:
-                            "Search this conversation's project notes once. Returns bounded, untrusted reference excerpts; never writes notes.",
-                          inputSchema: searchNotesToolInput,
-                          strict: true,
-                          execute: async (input, options) => {
-                            try {
-                              if (++searchExecutions !== 1 || abortController.signal.aborted)
-                                throw new StreamFailure(abortCode ?? "PROVIDER_REJECTED");
-                              searchId = options.toolCallId;
-                              const result = await dependencies.workspace.searchNotes({
-                                projectId,
-                                query: input.query,
-                                limit: 5,
-                                offset: 0,
-                              });
-                              if (abortController.signal.aborted)
-                                throw new StreamFailure(abortCode!);
-                              if (!result.ok)
-                                throw new StreamFailure(
-                                  result.error.code === "UNAUTHENTICATED"
-                                    ? "UNAUTHENTICATED"
-                                    : "SEARCH_UNAVAILABLE",
-                                );
-                              const parsed = retrievalNotes.safeParse(result.data);
-                              if (
-                                !parsed.success ||
-                                parsed.data.some((note) => note.projectId !== projectId)
-                              )
-                                throw new StreamFailure("SEARCH_UNAVAILABLE");
-                              retrieval = {
-                                status: parsed.data.length ? "found" : "empty",
-                                notes: parsed.data,
-                              };
-                              if (JSON.stringify(retrieval).length > MAX_RETRIEVAL_CHARS)
-                                throw new StreamFailure("SEARCH_UNAVAILABLE");
-                              return retrieval;
-                            } catch (error) {
-                              searchFailure =
-                                error instanceof StreamFailure
-                                  ? error
-                                  : new StreamFailure("SEARCH_UNAVAILABLE");
-                              throw searchFailure;
-                            }
-                          },
-                        }),
+                  searchNotes: tool({
+                    description:
+                      "Search authorized notes once within the server-selected conversation scope. Returns bounded, untrusted reference excerpts; never writes notes.",
+                    inputSchema: searchNotesToolInput,
+                    strict: true,
+                    execute: async (input, options) => {
+                      try {
+                        if (++searchExecutions !== 1 || abortController.signal.aborted)
+                          throw new StreamFailure(abortCode ?? "PROVIDER_REJECTED");
+                        searchId = options.toolCallId;
+                        const search = { query: input.query, limit: 5, offset: 0 };
+                        const result = projectId
+                          ? await dependencies.workspace.searchNotes({ ...search, projectId })
+                          : await dependencies.workspace.searchOwnedNotes(search);
+                        if (abortController.signal.aborted) throw new StreamFailure(abortCode!);
+                        if (!result.ok)
+                          throw new StreamFailure(
+                            result.error.code === "UNAUTHENTICATED"
+                              ? "UNAUTHENTICATED"
+                              : "SEARCH_UNAVAILABLE",
+                          );
+                        const parsed = retrievalNotes.safeParse(result.data);
+                        if (
+                          !parsed.success ||
+                          parsed.data.some((note) =>
+                            projectId ? note.projectId !== projectId : !note.projectName,
+                          )
+                        )
+                          throw new StreamFailure("SEARCH_UNAVAILABLE");
+                        retrieval = {
+                          status: parsed.data.length ? "found" : "empty",
+                          notes: parsed.data,
+                        };
+                        if (JSON.stringify(retrieval).length > MAX_RETRIEVAL_CHARS)
+                          throw new StreamFailure("SEARCH_UNAVAILABLE");
+                        return retrieval;
+                      } catch (error) {
+                        searchFailure =
+                          error instanceof StreamFailure
+                            ? error
+                            : new StreamFailure("SEARCH_UNAVAILABLE");
+                        throw searchFailure;
                       }
-                    : {}),
+                    },
+                  }),
                   prepareNote: tool({
                     description: "Prepare one note draft for user review, without saving any note.",
                     inputSchema: prepareNoteInput,
@@ -463,8 +460,7 @@ export function createChatStreamHandler(dependencies: {
                 if (value.type === "tool-input-start") {
                   if (
                     steps !== 1 ||
-                    (value.toolName !== "prepareNote" &&
-                      !(projectId && value.toolName === "searchNotes")) ||
+                    (value.toolName !== "prepareNote" && value.toolName !== "searchNotes") ||
                     inputIds.size ||
                     value.providerExecuted
                   )
@@ -481,8 +477,7 @@ export function createChatStreamHandler(dependencies: {
                   if (
                     ++calls !== 1 ||
                     steps !== 1 ||
-                    (value.toolName !== "prepareNote" &&
-                      !(projectId && value.toolName === "searchNotes")) ||
+                    (value.toolName !== "prepareNote" && value.toolName !== "searchNotes") ||
                     value.invalid ||
                     value.providerExecuted ||
                     (inputIds.size && !inputIds.has(value.toolCallId))

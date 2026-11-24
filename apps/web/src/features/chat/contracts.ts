@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { createNoteInput, searchNotesInput } from "../workspace/contracts";
+import { createNoteInput, createProjectInput, searchNotesInput } from "../workspace/contracts";
 
 export type ErrorCode =
   | "UNAUTHENTICATED"
@@ -64,6 +64,7 @@ export const sourcesSchema = z
         state: z.literal("available"),
         noteId: uuid,
         projectId: uuid,
+        projectName: createProjectInput.shape.name.refine(isChatText),
         title: createNoteInput.shape.title.refine(isChatText),
         href: z.string(),
         retrievedUpdatedAt: sourceTimestamp,
