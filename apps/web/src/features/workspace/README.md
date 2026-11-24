@@ -20,6 +20,16 @@
 
 Run `bun test apps/web/src/features/workspace/frontend.test.tsx` for offline reducer, validation, pagination, date and safe-rendering coverage. These tests do **not** establish authenticated browser or PostgreSQL integration.
 
+## P4.6E UI refinement
+
+New/Edit Note now fill their existing canvas content width, like Project Forms. Workspace/proposal fields share rounded primitive borders and an app-local raised neutral surface, with border-only focus and error-first invalid styling. Login and the shared Input/Textarea primitives are unchanged. Description, note content, read-only comparison and proposal textareas have fixed, viewport-bounded heights with internal scrolling and no drag resizing; the chat composer follows the same fixed-sizing policy.
+
+`fieldErrors` maps the existing Zod issue paths/codes/maximums to contextual English without displaying raw schema messages or internal paths. Workspace forms remain submit-first, focus the first invalid field, and revalidate only a field with an existing error as it changes. Optional native date input bad/range validity also receives the same safe date message rather than silently treating an incomplete typed date as blank. Shared schema rules/limits, exact draft content, mutation error handling, confirmed versions, comparison-only reads, explicit replacement and unsaved guards remain unchanged.
+
+Project Detail renders the description once, directly below its title inside the header above its divider. The expanded header scrolls normally (rather than pinning potentially 5,000 characters over the notes); the Created date stays below it in the content area. Existing project actions and the contextual popup are retained.
+
+Offline tests and synthetic mounted-browser/style checks are not authenticated Next/RSC or live PostgreSQL evidence; PM visual/mobile acceptance remains separate.
+
 ## Contracts
 
 Every operation returns `Promise<WorkspaceResult<T>>`: either `{ ok: true, data }` or `{ ok: false, error: { code, message } }`. Codes are `UNAUTHENTICATED`, `INVALID_INPUT`, `NOT_FOUND`, `CONFLICT`, and `UNAVAILABLE`. Missing and foreign-owned resources deliberately share `NOT_FOUND`. Unexpected session/driver errors return a generic message, without SQL or secrets.

@@ -26,6 +26,24 @@ export default function ProjectForm({ initial }: { initial?: Project }) {
   const pending = saving || navigating;
   const dirty = name !== (saved?.name ?? "") || description !== (saved?.description ?? "");
   useUnsavedChanges(dirty || pending);
+  function change(field: "name" | "description", value: string) {
+    if (field === "name") setName(value);
+    else setDescription(value);
+    setErrors((current) => {
+      if (!current[field]) return current;
+      const parsed = createProjectInput.safeParse({
+        name: field === "name" ? value : name,
+        description: (field === "description" ? value : description) || null,
+      });
+      const next = { ...current };
+      delete next[field];
+      if (!parsed.success) {
+        const message = fieldErrors(parsed.error)[field];
+        if (message) next[field] = message;
+      }
+      return next;
+    });
+  }
 
   return (
     <form
@@ -70,6 +88,7 @@ export default function ProjectForm({ initial }: { initial?: Project }) {
         }
       }}
     >
+      <FieldError id="project-form-error" message={errors.form} />
       <fieldset disabled={pending} className="form-fields grid gap-[20px]">
         <div className="field grid gap-[9px]">
           <Label htmlFor="project-name">
@@ -83,7 +102,7 @@ export default function ProjectForm({ initial }: { initial?: Project }) {
             name="name"
             className="form-control"
             value={name}
-            onChange={(event) => setName(event.target.value)}
+            onChange={(event) => change("name", event.target.value)}
             maxLength={200}
             autoComplete="off"
             required
@@ -103,9 +122,9 @@ export default function ProjectForm({ initial }: { initial?: Project }) {
           <Textarea
             id="project-description"
             name="description"
-            className="form-control description-input min-h-[160px] resize-y"
+            className="form-control description-input h-[160px] max-h-[40dvh] field-sizing-fixed resize-none overflow-y-auto"
             value={description}
-            onChange={(event) => setDescription(event.target.value)}
+            onChange={(event) => change("description", event.target.value)}
             maxLength={5000}
             aria-invalid={!!errors.description}
             aria-describedby={`project-description-help${errors.description ? " project-description-error" : ""}`}

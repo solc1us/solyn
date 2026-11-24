@@ -27,7 +27,26 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
   const pending = saving || navigating || loadingLatest;
   const dirty = isDirty(state);
   useUnsavedChanges(dirty || pending);
-  const change = (field: keyof Draft, value: string) => dispatch({ type: "edit", field, value });
+  function change(field: keyof Draft, value: string, invalidDate = false) {
+    dispatch({ type: "edit", field, value });
+    setErrors((current) => {
+      if (!current[field]) return current; // No validation noise before submission.
+      const draft = { ...state.draft, [field]: value };
+      const parsed = createNoteInput.safeParse({
+        projectId,
+        ...draft,
+        noteDate: draft.noteDate || null,
+      });
+      const next = { ...current };
+      delete next[field];
+      if (!parsed.success) {
+        const message = fieldErrors(parsed.error)[field];
+        if (message) next[field] = message;
+      }
+      if (field === "noteDate" && invalidDate) next.noteDate = "Please enter a valid date.";
+      return next;
+    });
+  }
 
   async function loadLatest() {
     if (!state.saved) return;
@@ -48,9 +67,9 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
   }
 
   return (
-    <div className="editor-wrap">
+    <div className="editor-wrap min-w-0 w-full">
       <form
-        className="note-editor m-0 w-full max-w-[760px]"
+        className="note-editor m-0 min-w-0 w-full"
         noValidate
         data-unsaved={dirty}
         aria-busy={pending}
@@ -71,8 +90,13 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
                 expectedVersion: state.saved.version,
               })
             : createNoteInput.safeParse(fields);
-          if (!parsed.success) {
-            setErrors(fieldErrors(parsed.error));
+          const invalidDate =
+            form.querySelector<HTMLInputElement>("#note-date")?.validity.valid === false;
+          if (!parsed.success || invalidDate) {
+            setErrors({
+              ...(!parsed.success ? fieldErrors(parsed.error) : {}),
+              ...(invalidDate ? { noteDate: "Please enter a valid date." } : {}),
+            });
             requestAnimationFrame(() =>
               form.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus(),
             );
@@ -123,6 +147,7 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
             {saving ? "Saving…" : state.saved ? "Save changes" : "Create note"}
           </Button>
         </div>
+        <FieldError id="note-form-error" message={errors.form} />
         <fieldset disabled={pending} className="editor-fields grid gap-[24px]">
           <div className="field grid gap-[9px]">
             <Label htmlFor="note-title">
@@ -134,7 +159,7 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
             <Input
               id="note-title"
               name="title"
-              className="form-control title-input rounded-none border-transparent px-0 py-[8px] text-[23px] font-[550] tracking-[-0.025em] [@media(max-width:760px)]:text-[21px]"
+              className="form-control title-input text-[18px] font-[550] tracking-[-0.015em]"
               value={state.draft.title}
               onChange={(event) => change("title", event.target.value)}
               maxLength={300}
@@ -161,7 +186,9 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
               min="0001-01-01"
               max="9999-12-31"
               value={state.draft.noteDate}
-              onChange={(event) => change("noteDate", event.target.value)}
+              onChange={(event) =>
+                change("noteDate", event.target.value, !event.currentTarget.validity.valid)
+              }
               aria-invalid={!!errors.noteDate}
               aria-describedby={`note-date-help${errors.noteDate ? " note-date-error" : ""}`}
               autoComplete="off"
@@ -184,7 +211,7 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
             <Textarea
               id="note-content"
               name="content"
-              className="form-control writing-area field-sizing-fixed min-h-[420px] resize-y rounded-none border-transparent px-0 py-[12px] text-[17px] leading-[1.65] [@media(max-width:760px)]:min-h-[420px] [@media(max-width:760px)]:text-[16px]"
+              className="form-control writing-area h-[420px] max-h-[65dvh] field-sizing-fixed resize-none overflow-y-auto text-[17px] leading-[1.65] [@media(max-width:760px)]:text-[16px]"
               value={state.draft.content}
               onChange={(event) => change("content", event.target.value)}
               maxLength={100000}
@@ -249,7 +276,7 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
               Note date: {latest.noteDate ? formatDate(latest.noteDate) : "Not set"}
             </p>
             <Textarea
-              className="form-control saved-comparison field-sizing-fixed min-h-[200px] resize-y leading-[1.7]"
+              className="form-control saved-comparison h-[240px] max-h-[50dvh] field-sizing-fixed resize-none overflow-y-auto leading-[1.7]"
               readOnly
               value={latest.content}
               aria-label="Latest saved note content"

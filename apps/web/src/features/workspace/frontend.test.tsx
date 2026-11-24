@@ -11,7 +11,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import LoadingWorkspace from "../../app/(workspace)/loading";
 import WorkspaceNotFound from "../../app/(workspace)/not-found";
 import NotFound from "../../app/not-found";
-import { createNoteInput } from "./contracts";
+import { createNoteInput, createProjectInput } from "./contracts";
 import { editorReducer, initialEditor, isDirty } from "./editor-state";
 import { Breadcrumbs, FieldError, MutationError } from "./feedback";
 import {
@@ -229,20 +229,20 @@ function ownerClasses(file: string, marker: string) {
   return result;
 }
 
-test("editor and project textarea owner utilities survive shared control merging at exact breakpoints", () => {
+test("workspace owners use rounded bordered fields and fixed scrolling textareas without changing shared primitives", () => {
   const title = controlClasses(
     renderToStaticMarkup(
       <Input className={ownerClasses("./note-editor.tsx", "title-input")} aria-invalid="true" />,
     ),
   );
   for (const expected of [
-    "text-[23px]",
-    "[@media(max-width:760px)]:text-[21px]",
-    "border-transparent",
+    "text-[18px]",
+    "border-input",
     "aria-invalid:border-destructive",
-    "rounded-none",
-    "px-0",
-    "py-[8px]",
+    "focus:not-aria-[invalid=true]:border-ring",
+    "rounded-[7px]",
+    "px-[10px]",
+    "py-[7px]",
   ])
     assert.ok(title.has(expected), expected);
   const writing = controlClasses(
@@ -251,33 +251,44 @@ test("editor and project textarea owner utilities survive shared control merging
     ),
   );
   for (const expected of [
-    "min-h-[420px]",
-    "[@media(max-width:760px)]:min-h-[420px]",
+    "h-[420px]",
+    "max-h-[65dvh]",
     "[@media(pointer:coarse)]:min-h-[44px]",
     "text-[17px]",
     "[@media(max-width:760px)]:text-[16px]",
     "field-sizing-fixed",
-    "resize-y",
+    "resize-none",
+    "overflow-y-auto",
+    "rounded-[7px]",
+    "border-input",
     "leading-[1.65]",
   ])
     assert.ok(writing.has(expected), expected);
-  assert.ok(!writing.has("[@media(max-width:760px)]:min-h-[44px]"));
+  assert.ok(!title.has("border-transparent"));
+  assert.ok(!title.has("rounded-none"));
   assert.ok(!writing.has("field-sizing-content"));
-  for (const [file, marker, min] of [
+  for (const [file, marker, height] of [
     ["./project-form.tsx", "description-input", "160"],
-    ["./note-editor.tsx", "saved-comparison", "200"],
+    ["./note-editor.tsx", "saved-comparison", "240"],
   ]) {
     const classes = controlClasses(
       renderToStaticMarkup(<Textarea className={ownerClasses(file, marker)} />),
     );
     for (const expected of [
-      `min-h-[${min}px]`,
+      `h-[${height}px]`,
       "[@media(max-width:760px)]:min-h-[44px]",
       "[@media(pointer:coarse)]:min-h-[44px]",
-      "resize-y",
+      "resize-none",
+      "field-sizing-fixed",
+      "overflow-y-auto",
     ])
       assert.ok(classes.has(expected), `${marker}: ${expected}`);
+    assert.ok(!classes.has("field-sizing-content"));
+    assert.ok(!classes.has("resize-y"));
   }
+  const css = readFileSync(new URL("../../index.css", import.meta.url), "utf8");
+  assert.match(css, /\.form-control\s*\{\s*background: var\(--secondary\)/);
+  assert.doesNotMatch(css, /border-bottom-color/);
 });
 
 test("shell keeps runtime drawer hooks and separates literal utilities from template interpolations", () => {
@@ -301,12 +312,24 @@ test("shell keeps runtime drawer hooks and separates literal utilities from temp
   }
 });
 
-test("project forms remain full-width while notes keep their left-aligned reading-width cap", () => {
+test("project and note forms both use the available content width", () => {
   const project = new Set(ownerClasses("./project-form.tsx", "project-form").split(/\s+/));
   assert.ok(project.has("w-full"));
   assert.ok(![...project].some((value) => value.startsWith("max-w-") || value === "mx-auto"));
   const note = new Set(ownerClasses("./note-editor.tsx", "note-editor").split(/\s+/));
-  for (const expected of ["m-0", "w-full", "max-w-[760px]"]) assert.ok(note.has(expected));
+  for (const expected of ["m-0", "w-full", "min-w-0"]) assert.ok(note.has(expected));
+  assert.ok(![...note].some((value) => value.startsWith("max-w-")));
+  const page = readFileSync(
+    new URL("../../app/(workspace)/projects/[projectId]/page.tsx", import.meta.url),
+    "utf8",
+  );
+  const header = page.match(/<header[\s\S]*?<\/header>/)?.[0];
+  assert.ok(header);
+  assert.ok(header.indexOf("<h1") < header.indexOf('className="project-description'));
+  assert.ok(header.includes("{project.description}"));
+  assert.equal((page.match(/\{project\.description\}/g) ?? []).length, 1);
+  assert.ok(!header.includes("Created {formatDate"));
+  assert.ok(!header.includes(":sticky"));
 });
 
 test("new and existing editors begin clean without inventing event dates", () => {
@@ -428,9 +451,68 @@ test("frontend validation uses the backend's exact contract and exposes field er
   assert.equal(result.success, false);
   if (!result.success) {
     const errors = fieldErrors(result.error);
-    assert.ok(errors.title);
-    assert.ok(errors.content);
-    assert.ok(errors.noteDate);
+    assert.deepEqual(errors, {
+      title: "Please enter a note title.",
+      content: "Please write your note before saving.",
+      noteDate: "Please enter a valid date.",
+    });
+  }
+});
+
+test("field errors use contextual English and schema limits without raw messages or internal paths", () => {
+  for (const [schema, input, expected] of [
+    [createProjectInput, { name: " " }, { name: "Please enter a project name." }],
+    [
+      createProjectInput,
+      { name: "A", description: "x".repeat(5001) },
+      { description: "The description is too long. Maximum 5,000 characters." },
+    ],
+    [
+      createProjectInput,
+      { name: "x".repeat(201) },
+      { name: "The project name is too long. Maximum 200 characters." },
+    ],
+    [
+      createNoteInput,
+      { projectId: note.projectId, title: "x".repeat(301), content: "Note" },
+      { title: "The note title is too long. Maximum 300 characters." },
+    ],
+    [
+      createNoteInput,
+      { projectId: note.projectId, title: "Title", content: "x".repeat(100001) },
+      { content: "The note is too long. Maximum 100,000 characters." },
+    ],
+    [
+      createNoteInput,
+      { projectId: "private-internal-id", title: "Title", content: "Note" },
+      { form: "Please review the form and try again." },
+    ],
+  ] as const) {
+    const result = schema.safeParse(input);
+    assert.equal(result.success, false);
+    if (!result.success) assert.deepEqual(fieldErrors(result.error), expected);
+  }
+  for (const value of ["2025-02-29", "0000-01-01", "not-a-date"]) {
+    const parsed = createNoteInput.safeParse({
+      projectId: note.projectId,
+      title: "Title",
+      content: "Note",
+      noteDate: value,
+    });
+    assert.ok(!parsed.success);
+    assert.equal(fieldErrors(parsed.error).noteDate, "Please enter a valid date.");
+  }
+});
+
+test("forms retain submit-first validation, first-invalid focus and only revalidate the corrected field", () => {
+  for (const file of ["./note-editor.tsx", "./project-form.tsx"]) {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    assert.match(source, /if \(!current\[field\]\) return current/);
+    assert.match(source, /delete next\[field\]/);
+    assert.match(source, /fieldErrors\(parsed\.error\)\[field\]/);
+    assert.ok(source.includes("'[aria-invalid=\"true\"]'"));
+    assert.match(source, /aria-describedby=/);
+    assert.match(source, /data-unsaved=\{dirty\}/);
   }
 });
 

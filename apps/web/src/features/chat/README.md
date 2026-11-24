@@ -40,6 +40,12 @@ The existing History menu has one **Include project chats** option. It requests 
 
 Project Detail continues opening the unchanged contextual popup. Historical `/chat?conversationId=…` and `/chat?projectId=…` routes remain unchanged: they reauthorize through the existing services, retain their original fixed project scope, and do not convert a project conversation into Main Chat. Full-page legacy project chats retain their existing controls and project-preserving New chat behavior; only the contextual popup omits New chat/History. The sidebar's primary Ask Solyn entry always opens Main Chat. No conversation data, model instructions, retrieval, source persistence, confirmation, popup layout/lifecycle or auth policy changes.
 
+## P4.6E — scoped UI polish
+
+The existing popup compact branch was verified on the P4.6D base in mounted development Strict Mode: it already omits conversation-title chrome, New chat and History. No duplicate hiding logic or lifecycle replacement is added. Full-page Main Chat keeps its controls and message typography. The popup gains 28px desktop insets, stronger neutral shadow, 13px message text and tighter message spacing; mobile retains smaller safe-area-aware insets and the existing VisualViewport/focus handling. Message recovery says **Reload messages** to distinguish it from thread History.
+
+Composer textareas now have fixed viewport-bounded sizing and internal scrolling rather than drag resizing/content-driven growth. The composer and workspace/proposal fields use existing raised neutral surfaces. Proposal fields retain the same confirmation validation, disabled/uncertain-save behavior and canonical payloads; field-specific safe English errors replace the generic technical warning, with associated invalid/error metadata. Proposal content has a bounded non-resizable textarea. No stream, retrieval, provenance, scope, navigation or knowledge-write contract changes.
+
 ## Operations and contracts
 
 All operations return `{ ok: true, data }` or a safe `{ ok: false, error: { code, message } }`. Session verification precedes strict Zod validation and SQL. Unknown fields (including `ownerId`, mutable scope, role/status and caller time) are rejected. Foreign/missing conversations, projects and turns share `NOT_FOUND`. Unexpected failures return `UNAVAILABLE` without logging/returning driver errors or content.

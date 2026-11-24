@@ -1335,8 +1335,10 @@ test("chat textarea merging keeps the outer-border focus policy and 72px minimum
     "bg-transparent",
     "shadow-none",
     "outline-none",
-    "resize-y",
-    "field-sizing-content",
+    "resize-none",
+    "field-sizing-fixed",
+    "h-[96px]",
+    "overflow-y-auto",
     "rounded-[4px]",
     "px-[4px]",
     "py-[2px]",
@@ -1353,6 +1355,25 @@ test("chat textarea merging keeps the outer-border focus policy and 72px minimum
     ![...classes].some((value) => value.includes("ring-1") || value.includes("min-h-[44px]")),
   );
   assert.ok(chatClasses("chat-composer").has("focus-within:border-ring"));
+});
+
+test("popup typography/spacing remain scoped and proposal textareas use fixed scrolling surfaces", () => {
+  const css = readFileSync(new URL("../../index.css", import.meta.url), "utf8");
+  assert.match(css, /\.project-chat-panel \.chat-prose\s*\{\s*font-size: 13px/);
+  assert.match(css, /\.project-chat-panel \.chat-message\s*\{\s*margin-bottom: 18px/);
+  const popup = readFileSync(new URL("./project-chat-popup.tsx", import.meta.url), "utf8");
+  assert.ok(popup.includes("right-[max(28px,env(safe-area-inset-right))]"));
+  assert.ok(popup.includes("[--project-chat-inset:28px]"));
+  assert.ok(popup.includes("[@media(max-width:760px)]:[--project-chat-inset:16px]"));
+  assert.ok(popup.includes("shadow-[0_20px_64px_#0006,0_4px_16px_#0004]"));
+  const markup = renderToStaticMarkup(
+    <ProposalPreview proposal={proposal} loadProjects={async () => ok([])} change={() => {}} />,
+  );
+  const textarea = markup.match(/<textarea[^>]*>/)?.[0];
+  assert.ok(textarea);
+  assert.ok(textarea.includes("field-sizing-fixed"));
+  assert.ok(textarea.includes("resize-none") && textarea.includes("overflow-y-auto"));
+  assert.ok(!textarea.includes("field-sizing-content") && !textarea.includes("resize-y"));
 });
 
 test("literal role utilities preserve assistant reading width and user alignment, bubble and responsive caps", () => {
@@ -1690,7 +1711,12 @@ test("preview renders escaped editable fields and nullable date without implicit
   );
   assert.match(edited, /data-unsaved="true"/);
   assert.match(edited, /Local changes — not saved/);
-  assert.match(edited, /role="alert"/);
+  assert.match(edited, /Please enter a note title\./);
+  assert.match(edited, /Please write your note before saving\./);
+  assert.match(edited, /Please enter a valid date\./);
+  assert.match(edited, /aria-invalid="true"/);
+  assert.match(edited, /aria-describedby="proposal-[^"]+-content-error"/);
+  assert.doesNotMatch(edited, /invalid Unicode|NUL|Too small|Invalid input/);
   const scoped = renderToStaticMarkup(
     <ProposalPreview
       proposal={{ ...proposal, scopedProject: { id: projectId, name: "Owned project" } }}

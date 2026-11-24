@@ -25,11 +25,16 @@ export default async function ProjectPage({ params }: { params: Promise<{ projec
   return (
     <div className="page-content px-[24px] pt-[20px] pb-[40px] [@media(max-width:760px)]:[padding:20px_max(16px,env(safe-area-inset-right))_max(40px,env(safe-area-inset-bottom))_max(16px,env(safe-area-inset-left))]">
       <Breadcrumbs current={project.name} />
-      <header className="page-heading -mx-[24px] mb-[20px] flex min-h-[40px] items-center justify-between gap-[16px] border-b border-border px-[24px] pb-[16px] [@media(min-width:761px)]:sticky [@media(min-width:761px)]:top-0 [@media(min-width:761px)]:z-10 [@media(min-width:761px)]:-mt-[20px] [@media(min-width:761px)]:bg-canvas [@media(min-width:761px)]:pt-[20px] [@media(max-width:1100px)]:flex-wrap [@media(max-width:760px)]:mx-0 [@media(max-width:760px)]:mb-[16px] [@media(max-width:760px)]:gap-[12px] [@media(max-width:760px)]:px-0">
-        <div className="min-w-0">
+      <header className="page-heading -mx-[24px] mb-[20px] flex min-h-[40px] items-center justify-between gap-[16px] border-b border-border px-[24px] pb-[16px] [@media(max-width:1100px)]:flex-wrap [@media(max-width:760px)]:mx-0 [@media(max-width:760px)]:mb-[16px] [@media(max-width:760px)]:gap-[12px] [@media(max-width:760px)]:px-0">
+        <div className="min-w-0 flex-1 basis-[240px]">
           <h1 className="text-[16px] tracking-[-0.015em]">{project.name}</h1>
+          {project.description ? (
+            <p className="project-description mt-[8px] max-w-[64ch] text-[14px] leading-[1.6] whitespace-pre-wrap text-muted-foreground [overflow-wrap:anywhere]">
+              {project.description}
+            </p>
+          ) : null}
         </div>
-        <div className="flex flex-wrap items-center gap-[8px]">
+        <div className="flex max-w-full flex-wrap items-center gap-[8px] self-start">
           <ProjectChatPopup project={{ id: project.id, name: project.name }} />
           <Link
             href={`/projects/${project.id}/edit`}
@@ -48,11 +53,6 @@ export default async function ProjectPage({ params }: { params: Promise<{ projec
         </div>
       </header>
       <div className="project-summary">
-        {project.description ? (
-          <p className="project-description mt-[8px] max-w-[64ch] leading-[1.6] whitespace-pre-wrap text-muted-foreground [overflow-wrap:anywhere]">
-            {project.description}
-          </p>
-        ) : null}
         <p className="metadata mt-[16px] max-w-[64ch] text-[12px] leading-[1.6] text-muted-foreground">
           Created {formatDate(project.createdAt)}
         </p>

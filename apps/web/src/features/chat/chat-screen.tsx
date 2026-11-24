@@ -531,7 +531,7 @@ export default function ChatScreen({
                   startTransition(async () => session.reload());
                 }}
               >
-                Reload saved history
+                {compact ? "Reload messages" : "Reload saved history"}
               </Button>
             ) : null}
             {session.canRetry ? (
@@ -548,7 +548,7 @@ export default function ChatScreen({
           <form
             ref={form}
             data-unsaved={dirty ? "true" : "false"}
-            className="chat-composer rounded-[8px] border border-input bg-canvas p-[10px] focus-within:border-ring"
+            className="chat-composer rounded-[8px] border border-input bg-secondary p-[10px] focus-within:border-ring"
             onSubmit={(event) => {
               event.preventDefault();
               startTransition(async () => session.submit());
@@ -559,7 +559,7 @@ export default function ChatScreen({
             </label>
             <Textarea
               id="chat-input"
-              className="chat-input min-h-[72px] max-h-[min(24dvh,180px)] resize-y rounded-[4px] border-0 bg-transparent px-[4px] py-[2px] text-[15px] leading-[1.6] [@media(max-width:760px)]:min-h-[72px] [@media(max-width:760px)]:text-[16px] [@media(pointer:coarse)]:min-h-[72px]"
+              className="chat-input h-[96px] min-h-[72px] max-h-[min(24dvh,180px)] field-sizing-fixed resize-none overflow-y-auto rounded-[4px] border-0 bg-transparent px-[4px] py-[2px] text-[15px] leading-[1.6] [@media(max-width:760px)]:min-h-[72px] [@media(max-width:760px)]:text-[16px] [@media(pointer:coarse)]:min-h-[72px]"
               rows={compact ? 2 : 3}
               maxLength={CHAT_INPUT_LIMIT}
               value={state.draft}
@@ -606,7 +606,7 @@ export default function ChatScreen({
           </form>
           <p className="chat-help mt-[8px] text-[12px] text-muted-foreground" id="chat-input-help">
             {compact
-              ? "Closing keeps drafts here; active replies continue."
+              ? "Drafts stay here. Replies continue when closed."
               : "Enter to send · Shift+Enter for a new line. Ask to prepare a note draft, then review and explicitly save it. Search covers authorized notes in this chat’s scope."}
           </p>
         </div>
