@@ -125,26 +125,31 @@ export default function NoteEditor({ projectId, initial }: { projectId: string; 
           }
         }}
       >
-        <div className="editor-toolbar mb-[20px] flex items-center justify-end gap-[12px] pb-[16px] [@media(max-width:760px)]:gap-[10px]">
-          <p className="save-indicator text-[13px] text-muted-foreground" role="status">
-            {pending
-              ? loadingLatest
-                ? "Loading…"
-                : "Saving…"
-              : dirty
-                ? "Unsaved changes"
-                : state.savedFeedback
-                  ? "Saved"
-                  : ""}
-          </p>
-          <Button
-            type="submit"
-            className="control"
-            disabled={pending || (!!state.saved && !dirty) || state.error === "CONFLICT"}
-          >
-            {saving ? "Saving…" : state.saved ? "Save changes" : "Create note"}
-          </Button>
-        </div>
+        <header className="page-heading -mx-[24px] mb-[20px] flex items-center justify-between gap-[16px] border-b border-solid border-border px-[24px] pb-[16px] [@media(min-width:761px)]:sticky [@media(min-width:761px)]:top-0 [@media(min-width:761px)]:z-10 [@media(min-width:761px)]:-mt-[20px] [@media(min-width:761px)]:bg-canvas [@media(min-width:761px)]:pt-[20px] [@media(max-width:1100px)]:flex-wrap [@media(max-width:760px)]:mx-0 [@media(max-width:760px)]:mb-[16px] [@media(max-width:760px)]:gap-[12px] [@media(max-width:760px)]:px-0">
+          <h1 className="min-w-0 text-[16px] font-[600] tracking-[-0.015em] text-foreground">
+            {initial ? "Edit Note" : "Create Note"}
+          </h1>
+          <div className="ml-auto flex items-center gap-[12px] [@media(max-width:760px)]:gap-[10px]">
+            <p className="save-indicator text-[13px] text-muted-foreground" role="status">
+              {pending
+                ? loadingLatest
+                  ? "Loading…"
+                  : "Saving…"
+                : dirty
+                  ? "Unsaved changes"
+                  : state.savedFeedback
+                    ? "Saved"
+                    : ""}
+            </p>
+            <Button
+              type="submit"
+              className="control"
+              disabled={pending || (!!state.saved && !dirty) || state.error === "CONFLICT"}
+            >
+              {saving ? "Saving…" : state.saved ? "Save changes" : "Create note"}
+            </Button>
+          </div>
+        </header>
         <FieldError id="note-form-error" message={errors.form} />
         <fieldset disabled={pending} className="editor-fields grid gap-[24px]">
           <div className="field grid gap-[9px]">

@@ -335,31 +335,61 @@ test("project and note forms both use the available content width", () => {
   assert.ok(!header.includes(":sticky"));
 });
 
-test("workspace actions and unsaved feedback are adjacent in upper-right toolbars without redundant controls", () => {
-  for (const [file, marker] of [
-    ["./note-editor.tsx", "editor-toolbar"],
-    ["./project-form.tsx", "project-toolbar"],
-  ]) {
-    const source = readFileSync(new URL(file!, import.meta.url), "utf8");
-    const toolbar = source.match(new RegExp(`<div className="${marker}[^]*?<\\/div>`))?.[0];
-    assert.ok(toolbar);
-    assert.ok(toolbar.includes("justify-end"));
-    assert.ok(toolbar.includes('role="status"') && toolbar.includes("Unsaved changes"));
-    assert.match(toolbar, /<\/p>\s*<Button/);
-    assert.ok(source.indexOf(toolbar) < source.indexOf("<fieldset"));
+test("form titles, adjacent status and submit actions share one sticky responsive page header above fields", () => {
+  for (const file of ["./note-editor.tsx", "./project-form.tsx"]) {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    const header = source.match(/<header className="page-heading[^]*?<\/header>/)?.[0];
+    assert.ok(header);
+    assert.equal((source.match(/<header/g) ?? []).length, 1);
+    assert.equal((source.match(/<h1/g) ?? []).length, 1);
+    for (const utility of [
+      "items-center",
+      "justify-between",
+      "border-b",
+      "border-border",
+      "[@media(min-width:761px)]:sticky",
+      "[@media(min-width:761px)]:top-0",
+      "[@media(max-width:1100px)]:flex-wrap",
+    ])
+      assert.ok(header.includes(utility), utility);
+    assert.ok(header.indexOf("<h1") < header.indexOf('role="status"'));
+    assert.ok(header.includes("ml-auto flex items-center"));
+    assert.ok(header.includes("Unsaved changes") && header.includes("Saved"));
+    assert.match(header, /<\/p>\s*<Button/);
+    assert.match(header, /type="submit"/);
+    assert.ok(source.indexOf("<form") < source.indexOf(header));
+    assert.ok(source.indexOf(header) < source.indexOf("<fieldset"));
+    assert.doesNotMatch(source, /editor-toolbar|project-toolbar/);
     assert.match(source, /<MutationError/);
     assert.match(source, /useUnsavedChanges\(dirty \|\| pending\)/);
   }
   const note = readFileSync(new URL("./note-editor.tsx", import.meta.url), "utf8");
   const project = readFileSync(new URL("./project-form.tsx", import.meta.url), "utf8");
-  assert.doesNotMatch(
-    note,
-    /"New note"|"All changes saved"|Nothing is saved|Plain text\. Formatting/,
-  );
+  assert.doesNotMatch(note, /"All changes saved"|Nothing is saved|Plain text\. Formatting/);
   assert.doesNotMatch(project, /Cancel|form-footer|Optional context for this project/);
   assert.match(note, /When it happened, if known/);
   assert.match(project, /Check your projects before retrying/);
   assert.match(note, /Before retrying an uncertain save/);
+});
+
+test("all four server routes retain breadcrumbs and delegate the single title/action header to their client form", () => {
+  for (const [route, component] of [
+    ["projects/new/page.tsx", "ProjectForm"],
+    ["projects/[projectId]/edit/page.tsx", "ProjectForm"],
+    ["projects/[projectId]/notes/new/page.tsx", "NoteEditor"],
+    ["projects/[projectId]/notes/[noteId]/page.tsx", "NoteEditor"],
+  ]) {
+    const source = readFileSync(new URL(`../../app/(workspace)/${route}`, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /"use client"|<header|<h1|<Button/);
+    assert.equal((source.match(/<Breadcrumbs/g) ?? []).length, 1);
+    assert.ok(source.indexOf("<Breadcrumbs") < source.indexOf(`<${component}`));
+    assert.equal(source.split(`<${component}`).length - 1, 1);
+  }
+  const project = readFileSync(new URL("./project-form.tsx", import.meta.url), "utf8");
+  const note = readFileSync(new URL("./note-editor.tsx", import.meta.url), "utf8");
+  assert.match(project, /initial \? "Edit project" : "New project"/);
+  assert.match(note, /initial \? "Project note" : "New note"/);
+  assert.ok(ownerClasses("./project-form.tsx", "project-form").includes("m-0"));
 });
 
 test("new and existing editors begin clean without inventing event dates", () => {
