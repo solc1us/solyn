@@ -125,11 +125,15 @@ export default function ChatScreen({
   conversationId,
   project,
   initial,
+  popup,
 }: {
   conversationId?: string;
   project: ProjectScope;
   initial?: Initial;
+  popup?: { open: boolean };
 }) {
+  const compact = !!popup;
+  const popupOpen = popup?.open;
   const router = useRouter();
   const sessions = useRef(new ChatSessions());
   const activeSession = useRef<ChatSession | null>(null);
@@ -143,12 +147,29 @@ export default function ChatScreen({
           create: actions.createConversation,
           confirm: confirmNoteProposal,
           recoverProposal: actions.getNoteProposal,
-          read: actions.getConversation,
+          read: compact
+            ? async (input) => {
+                const result = await actions.getConversation(input);
+                if (
+                  result.ok &&
+                  (result.data.conversation.projectId !== project?.id ||
+                    result.data.project?.id !== project?.id)
+                )
+                  return {
+                    ok: false as const,
+                    error: {
+                      code: "UNAVAILABLE" as const,
+                      message: "Project chat is unavailable.",
+                    },
+                  };
+                return result;
+              }
+            : actions.getConversation,
           fetch: (...args) => fetch(...args),
           uuid: () => crypto.randomUUID(),
           created: (id) => {
             sessions.current.promote(routeKey, id, session);
-            if (activeSession.current === session)
+            if (!compact && activeSession.current === session)
               startTransition(() =>
                 router.replace(`/chat?conversationId=${id}`, { scroll: false }),
               );
@@ -166,9 +187,19 @@ export default function ChatScreen({
   if (selection.key !== routeKey) setSelection({ key: routeKey, session: select() });
   const session = selection.session;
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
-  useUnsavedChanges(session.hasProposalChanges);
+  const dirty = session.hasProposalChanges || (compact && !!state.draft);
+  useUnsavedChanges(dirty);
   const previousSession = useRef(session);
+  const wasDismissed = useRef(false);
+  // Revoke on both dismissal and committed reopen: work finishing while hidden
+  // may have refreshed sources before access changed again. Initial mount is
+  // still read-only/Strict Mode safe; reopen never paints those cached links.
+  useLayoutEffect(() => {
+    if (popupOpen === false || wasDismissed.current) session.invalidateSources();
+    wasDismissed.current = popupOpen === false;
+  }, [session, popupOpen]);
   useEffect(() => {
+    if (popupOpen === false) return;
     // Adopt a fresh authorized snapshot when returning to a cached conversation,
     // but never apply an older route response over an active/promoted stream.
     const switched = previousSession.current !== session;
@@ -177,7 +208,7 @@ export default function ChatScreen({
     // effect clears switched-session sources before paint; refresh via an action.
     if (session.getSnapshot().needsReconcile) void session.reload(false, false);
     else if (switched && initial) session.adopt(initial);
-  }, [session, initial]);
+  }, [session, initial, popupOpen]);
   const messages = useRef<HTMLDivElement>(null);
   const form = useRef<HTMLFormElement>(null);
   const pinned = useRef(true);
@@ -237,20 +268,20 @@ export default function ChatScreen({
   }, [session]);
   useEffect(() => {
     const scroll = () => {
-      if (window.matchMedia("(max-width: 760px)").matches)
+      if (!compact && window.matchMedia("(max-width: 760px)").matches)
         pinned.current =
           window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 120;
     };
     window.addEventListener("scroll", scroll, { passive: true });
     return () => window.removeEventListener("scroll", scroll);
-  }, []);
+  }, [compact]);
   useLayoutEffect(() => {
-    if (!pinned.current || !messages.current) return;
-    if (window.matchMedia("(min-width: 761px)").matches)
+    if (popupOpen === false || !pinned.current || !messages.current) return;
+    if (compact || window.matchMedia("(min-width: 761px)").matches)
       messages.current.scrollTop = messages.current.scrollHeight;
     else if (!document.getElementById("workspace-sidebar")?.classList.contains("is-open"))
       window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "instant" });
-  }, [state.messages, session]);
+  }, [state.messages, session, compact, popupOpen]);
   const busy = state.phase !== "idle";
   const canSend = session.canSend && !!state.draft.trim();
   const newHref = {
@@ -274,7 +305,7 @@ export default function ChatScreen({
     const element = messages.current;
     if (!element) return;
     pinned.current = false;
-    const desktop = window.matchMedia("(min-width: 761px)").matches;
+    const desktop = compact || window.matchMedia("(min-width: 761px)").matches;
     const height = desktop ? element.scrollHeight : document.documentElement.scrollHeight;
     await session.reload(true);
     requestAnimationFrame(() => {
@@ -287,49 +318,51 @@ export default function ChatScreen({
       className="chat-screen flex h-full min-h-0 flex-col [@media(max-width:760px)]:h-auto [@media(max-width:760px)]:min-h-[calc(100dvh-88px)]"
       aria-label="Ask Solyn"
     >
-      <header className="chat-header relative z-10 shrink-0 border-b border-border bg-canvas px-[24px] pt-[14px] pb-[12px] [@media(max-width:760px)]:px-[16px] [@media(max-width:760px)]:py-[14px]">
-        <div className="chat-header-row flex items-center justify-between gap-[12px] [@media(max-width:760px)]:flex-wrap">
-          <h1 className="min-w-0 truncate text-[16px] tracking-[-0.015em] [@media(max-width:760px)]:whitespace-normal">
-            {state.conversation?.title ?? "Ask Solyn"}
-          </h1>
-          <div className="flex flex-wrap items-center gap-[8px]">
-            <Button
-              ref={historyToggle}
-              type="button"
-              className="control"
-              variant="secondary"
-              aria-expanded={history}
-              aria-controls="chat-history"
-              onClick={() => setHistory(!history)}
-            >
-              History
-            </Button>
-            <Link href={newHref} className={cn(buttonVariants(), "bg-clip-border select-auto")}>
-              <Plus size={15} className="size-[15px]" aria-hidden="true" />
-              New chat
-            </Link>
+      {!compact && (
+        <header className="chat-header relative z-10 shrink-0 border-b border-border bg-canvas px-[24px] pt-[14px] pb-[12px] [@media(max-width:760px)]:px-[16px] [@media(max-width:760px)]:py-[14px]">
+          <div className="chat-header-row flex items-center justify-between gap-[12px] [@media(max-width:760px)]:flex-wrap">
+            <h1 className="min-w-0 truncate text-[16px] tracking-[-0.015em] [@media(max-width:760px)]:whitespace-normal">
+              {state.conversation?.title ?? "Ask Solyn"}
+            </h1>
+            <div className="flex flex-wrap items-center gap-[8px]">
+              <Button
+                ref={historyToggle}
+                type="button"
+                className="control"
+                variant="secondary"
+                aria-expanded={history}
+                aria-controls="chat-history"
+                onClick={() => setHistory(!history)}
+              >
+                History
+              </Button>
+              <Link href={newHref} className={cn(buttonVariants(), "bg-clip-border select-auto")}>
+                <Plus size={15} className="size-[15px]" aria-hidden="true" />
+                New chat
+              </Link>
+            </div>
           </div>
-        </div>
-        <div className="chat-scope mt-[4px] text-[12px] text-muted-foreground [overflow-wrap:anywhere]">
-          {state.project ? (
-            <Link
-              href={`/projects/${state.project.id}`}
-              className="inline-flex items-center gap-[6px] text-[#b2c7ff]"
-              aria-label={`Project: ${state.project.name}. Back to project`}
-            >
-              <ArrowLeft size={14} aria-hidden="true" />
-              Project: {state.project.name}
-            </Link>
-          ) : (
-            <span>
-              {conversationId && !state.conversation ? "Scope unavailable" : "General chat"}
-            </span>
-          )}
-        </div>
-        <div id="chat-history">
-          {history ? <ChatHistory close={() => setHistory(false)} /> : null}
-        </div>
-      </header>
+          <div className="chat-scope mt-[4px] text-[12px] text-muted-foreground [overflow-wrap:anywhere]">
+            {state.project ? (
+              <Link
+                href={`/projects/${state.project.id}`}
+                className="inline-flex items-center gap-[6px] text-[#b2c7ff]"
+                aria-label={`Project: ${state.project.name}. Back to project`}
+              >
+                <ArrowLeft size={14} aria-hidden="true" />
+                Project: {state.project.name}
+              </Link>
+            ) : (
+              <span>
+                {conversationId && !state.conversation ? "Scope unavailable" : "General chat"}
+              </span>
+            )}
+          </div>
+          <div id="chat-history">
+            {history ? <ChatHistory close={() => setHistory(false)} /> : null}
+          </div>
+        </header>
+      )}
       <div
         className="chat-messages min-h-0 flex-1 overflow-auto p-[24px] [scrollbar-gutter:stable] [scroll-padding-block:20px] [@media(max-width:760px)]:overflow-visible [@media(max-width:760px)]:px-[16px] [@media(max-width:760px)]:py-[20px]"
         ref={messages}
@@ -337,7 +370,7 @@ export default function ChatScreen({
         role="region"
         aria-label="Conversation messages"
         onScroll={(event) => {
-          if (window.matchMedia("(min-width: 761px)").matches) {
+          if (compact || window.matchMedia("(min-width: 761px)").matches) {
             const element = event.currentTarget;
             pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight < 120;
           }
@@ -490,7 +523,7 @@ export default function ChatScreen({
           </div>
           <form
             ref={form}
-            data-unsaved={session.hasProposalChanges ? "true" : "false"}
+            data-unsaved={dirty ? "true" : "false"}
             className="chat-composer rounded-[8px] border border-input bg-canvas p-[10px] focus-within:border-ring"
             onSubmit={(event) => {
               event.preventDefault();
@@ -503,7 +536,7 @@ export default function ChatScreen({
             <Textarea
               id="chat-input"
               className="chat-input min-h-[72px] max-h-[min(24dvh,180px)] resize-y rounded-[4px] border-0 bg-transparent px-[4px] py-[2px] text-[15px] leading-[1.6] [@media(max-width:760px)]:min-h-[72px] [@media(max-width:760px)]:text-[16px] [@media(pointer:coarse)]:min-h-[72px]"
-              rows={3}
+              rows={compact ? 2 : 3}
               maxLength={CHAT_INPUT_LIMIT}
               value={state.draft}
               placeholder="Message Solyn…"
@@ -548,8 +581,9 @@ export default function ChatScreen({
             </div>
           </form>
           <p className="chat-help mt-[8px] text-[12px] text-muted-foreground" id="chat-input-help">
-            Enter to send · Shift+Enter for a new line. Ask to prepare a note draft; review edits
-            locally. Stored project notes are not available to chat.
+            {compact
+              ? "Closing keeps drafts here; active replies continue."
+              : "Enter to send · Shift+Enter for a new line. Ask to prepare a note draft, then review and explicitly save it. Search covers authorized notes in this chat’s scope."}
           </p>
         </div>
       </div>

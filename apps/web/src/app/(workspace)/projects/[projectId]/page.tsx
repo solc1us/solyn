@@ -1,8 +1,9 @@
 import { buttonVariants } from "@solyn/ui/components/button";
 import { cn } from "@solyn/ui/lib/utils";
-import { Plus, Pencil, MessageSquare } from "lucide-react";
+import { Plus, Pencil } from "lucide-react";
 import Link from "next/link";
 
+import ProjectChatPopup from "@/features/chat/project-chat-popup";
 import { searchNotes } from "@/features/workspace/actions";
 import Collection from "@/features/workspace/collection";
 import NoteSearch from "@/features/workspace/note-search";
@@ -29,13 +30,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ projec
           <h1 className="text-[16px] tracking-[-0.015em]">{project.name}</h1>
         </div>
         <div className="flex flex-wrap items-center gap-[8px]">
-          <Link
-            href={`/chat?projectId=${project.id}`}
-            className={cn(buttonVariants(), "bg-clip-border select-auto")}
-          >
-            <MessageSquare size={15} className="size-[15px]" aria-hidden="true" />
-            Ask Solyn
-          </Link>
+          <ProjectChatPopup project={{ id: project.id, name: project.name }} />
           <Link
             href={`/projects/${project.id}/edit`}
             className={cn(buttonVariants(), "bg-clip-border select-auto")}

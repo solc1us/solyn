@@ -1463,6 +1463,42 @@ function proposalView(): ChatView {
   };
 }
 
+test("dismissal source invalidation and reopen reconciliation preserve drafts and edited proposals without writes", async () => {
+  const view = proposalView();
+  const f = fixture({ existing: true, initial: ok(view), read: async () => ok(view) });
+  f.session.setDraft("Keep this unsent message");
+  f.session.editProposal(proposal.id, { title: "Edited while reviewing" });
+  f.session.invalidateSources();
+  assert.equal(f.session.getSnapshot().needsReconcile, true);
+  assert.equal(f.reads.length, 0);
+  await f.session.reload(false, false);
+  assert.equal(f.session.getSnapshot().needsReconcile, false);
+  assert.equal(f.session.getSnapshot().draft, "Keep this unsent message");
+  assert.equal(f.session.getSnapshot().proposalEdits[proposal.id]!.title, "Edited while reviewing");
+  assert.equal(f.session.hasProposalChanges, true);
+  assert.deepEqual(f.creates, []);
+  assert.deepEqual(f.confirms, []);
+  assert.deepEqual(f.sent, []);
+});
+
+test("popup owner wiring keeps Main Chat chrome and scrolling while hiding popup conversation controls", () => {
+  const screen = readFileSync(new URL("./chat-screen.tsx", import.meta.url), "utf8");
+  assert.match(screen, /!compact && \(/);
+  assert.match(screen, /!compact && activeSession\.current === session/);
+  assert.match(
+    screen,
+    /if \(popupOpen === false \|\| wasDismissed\.current\) session\.invalidateSources\(\)/,
+  );
+  assert.match(screen, /if \(popupOpen === false\) return/);
+  assert.match(screen, /compact \|\| window\.matchMedia/);
+  const popup = readFileSync(new URL("./project-chat-popup.tsx", import.meta.url), "utf8");
+  assert.match(popup, /<ProjectPopup key=\{project\.id\}/);
+  assert.match(popup, /hidden=\{!open\} inert=\{!open\}/);
+  assert.match(popup, /aria-modal="false"/);
+  assert.match(popup, /listConversations\(\{ projectId: project\.id, limit: 1, offset: 0 \}\)/);
+  assert.doesNotMatch(popup, /createConversation|localStorage|sessionStorage|window\.scrollTo/);
+});
+
 test("proposal finish validates source identity and exposes a preview only after matching persisted finish", async () => {
   const result = await consumeChatResponse(
     sse(start() + delta(PROPOSAL_MESSAGE) + proposalFinish()),
@@ -1774,7 +1810,11 @@ test("off-page unresolved saves remain dirty and expose the session guard to sig
   const source = readFileSync(new URL("./chat-screen.tsx", import.meta.url), "utf8");
   const composer = source.match(/<form\s+ref=\{form\}[\s\S]*?onSubmit=/)?.[0];
   assert.ok(composer);
-  assert.match(composer, /data-unsaved=\{session\.hasProposalChanges \? "true" : "false"\}/);
+  assert.match(composer, /data-unsaved=\{dirty \? "true" : "false"\}/);
+  assert.match(
+    source,
+    /const dirty = session\.hasProposalChanges \|\| \(compact && !!state\.draft\)/,
+  );
 
   await f.session.recoverProposal(proposal.id);
   assert.equal(f.session.hasProposalChanges, false);

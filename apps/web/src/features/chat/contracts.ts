@@ -28,7 +28,7 @@ export const createConversationInput = z.strictObject({
   title: z.string().trim().min(1).max(300),
   projectId: uuid.nullable().default(null),
 });
-export const listConversationsInput = z.strictObject(pagination);
+export const listConversationsInput = z.strictObject({ ...pagination, projectId: uuid.optional() });
 export const getConversationInput = z.strictObject({
   conversationId: uuid,
   ...pagination,

@@ -403,7 +403,12 @@ export function createChatService({
         db
           .select(conversationFields)
           .from(conversations)
-          .where(owned(ownerId))
+          .where(
+            and(
+              owned(ownerId),
+              value.projectId ? eq(conversations.projectId, value.projectId) : undefined,
+            ),
+          )
           .orderBy(desc(conversations.updatedAt), desc(conversations.id))
           .limit(value.limit)
           .offset(value.offset),

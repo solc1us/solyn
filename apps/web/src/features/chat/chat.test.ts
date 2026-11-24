@@ -932,6 +932,95 @@ test("conversation listing is owner/project scoped, bounded and stably ordered",
   exhausted(f);
 });
 
+test("latest project conversation lookup filters in SQL before stable ordering and limit one", async () => {
+  const f = fixture([
+    {
+      sql: /from "chat_conversations"/,
+      rows: [[conversationId, projectId, "Project conversation", now, now]],
+      inspect: (sql, params) => {
+        scoped(sql, params);
+        assert.match(
+          sql,
+          /and \("chat_conversations"\."project_id" = \$\d+\)\) order by "chat_conversations"\."updated_at" desc, "chat_conversations"\."id" desc limit \$/,
+        );
+        assert.deepEqual(params.slice(-2), [projectId, 1]);
+        assert.doesNotMatch(sql, /offset|\b(?:insert|update|delete)\s/i);
+      },
+    },
+  ]);
+  const result = await f.service.listConversations({ projectId, limit: 1, offset: 0 });
+  exhausted(f);
+  const rows = data(result);
+  assert.equal(rows[0]!.projectId, projectId);
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.sessionCalls(), 1);
+  exhausted(f);
+});
+
+test("foreign, nonexistent and empty project history all return empty without writes or metadata", async () => {
+  for (const id of [projectId, turnId, nextTurnId]) {
+    const f = fixture([
+      {
+        sql: /from "chat_conversations"/,
+        inspect: (sql, params) => {
+          scoped(sql, params);
+          assert.ok(params.includes(id));
+        },
+      },
+    ]);
+    assert.deepEqual(data(await f.service.listConversations({ projectId: id, limit: 1 })), []);
+    assert.equal(f.calls.length, 1);
+    exhausted(f);
+  }
+});
+
+test("project history filter rejects malformed IDs, null, identity overrides and invalid bounds before SQL", async () => {
+  const f = fixture();
+  for (const input of [
+    { projectId: "invalid" },
+    { projectId: null },
+    { projectId: [projectId] },
+    { projectId, ownerId: "user-b" },
+    { projectId, limit: 0 },
+    { projectId, offset: -1 },
+  ])
+    failure(await f.service.listConversations(input), "INVALID_INPUT");
+  assert.equal(f.calls.length, 0);
+  const anonymous = fixture([], null);
+  failure(await anonymous.service.listConversations({ projectId, limit: 1 }), "UNAUTHENTICATED");
+  assert.equal(anonymous.calls.length, 0);
+});
+
+test("project lookup rechecks the session on every invocation and binds the current owner on both joins", async () => {
+  const f = fixture([
+    {
+      sql: /from "chat_conversations"/,
+      inspect: scoped,
+    },
+  ]);
+  data(await f.service.listConversations({ projectId, limit: 1 }));
+  f.expireSession();
+  failure(await f.service.listConversations({ projectId, limit: 1 }), "UNAUTHENTICATED");
+  assert.equal(f.sessionCalls(), 2);
+  assert.equal(f.calls.length, 1);
+  exhausted(f);
+  const b = fixture(
+    [
+      {
+        sql: /from "chat_conversations"/,
+        inspect: (_sql, params) => {
+          assert.equal(params.filter((value) => value === "user-b").length, 2);
+          assert.ok(!params.includes("user-a"));
+          assert.ok(params.includes(projectId));
+        },
+      },
+    ],
+    "user-b",
+  );
+  assert.deepEqual(data(await b.service.listConversations({ projectId, limit: 1 })), []);
+  exhausted(b);
+});
+
 test("retrieval reads one coherent snapshot with ordered, paginated, owned messages and pending detection", async () => {
   const f = fixture([
     { sql: /^begin isolation level repeatable read read only$/ },
