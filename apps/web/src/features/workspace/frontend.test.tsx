@@ -387,8 +387,8 @@ test("all four server routes retain breadcrumbs and delegate the single title/ac
   }
   const project = readFileSync(new URL("./project-form.tsx", import.meta.url), "utf8");
   const note = readFileSync(new URL("./note-editor.tsx", import.meta.url), "utf8");
-  assert.match(project, /initial \? "Edit project" : "New project"/);
-  assert.match(note, /initial \? "Project note" : "New note"/);
+  assert.match(project, /initial \? "Edit Project" : "Create Project"/);
+  assert.match(note, /initial \? "Edit Note" : "Create Note"/);
   assert.ok(ownerClasses("./project-form.tsx", "project-form").includes("m-0"));
 });
 

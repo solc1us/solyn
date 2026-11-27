@@ -211,7 +211,7 @@ Pengguna tetap dapat membaca project, melihat daftar/detail catatan, mengedit, d
 
 ### 10.3 Tool kontrak konseptual
 
-**Status implementasi Phase 3:** model hanya menerima `prepareNote` berbasis schema, tanpa `execute`. Backend memvalidasi dan mempersistenkan proposal; konfirmasi note dilakukan melalui authenticated Server Action `confirmNoteProposal`, bukan tool `saveNote` milik model. `listProjects`/`getNote` tersedia untuk UI melalui backend, tetapi tidak diberikan ke model. `searchNotes`, retrieval dan citations belum diimplementasikan. Tabel berikut mempertahankan kontrak konseptual MVP, bukan daftar tools yang saat ini tersedia untuk LLM.
+**Status implementasi Phase 4:** model menerima `prepareNote` berbasis schema tanpa `execute` dan tool read-only `searchNotes`. Main Chat mencari lintas project milik akun dari session server; Project Chat tetap pada satu project terotorisasi. Referensi Retrieved notes dipersistenkan dan metadata diotorisasi ulang saat dibaca; ini bukan verifikasi setiap klaim atau inline citations dari model. Backend memvalidasi dan mempersistenkan proposal; konfirmasi note dilakukan melalui authenticated Server Action `confirmNoteProposal`, bukan tool `saveNote` milik model. `listProjects`/`getNote` tersedia untuk UI melalui backend, tetapi tidak diberikan ke model. Tabel berikut mempertahankan kontrak konseptual MVP, bukan daftar tools yang saat ini tersedia untuk LLM.
 
 | Tool           | Hak      | Keterangan                                                                          |
 | -------------- | -------- | ----------------------------------------------------------------------------------- |
@@ -298,7 +298,7 @@ MVP dimulai dari pencarian teks dan metadata (project, judul, konten, tanggal) d
 
 **Status implementasi:** skema fisik dan index minimum sudah tersedia di `packages/db/src/schema`. Entitas chat fisik adalah `chat_conversations` dan `chat_messages` (bukan tabel `chat_sessions`). `note_revisions` menyimpan snapshot versi keluar pada edit bermakna secara atomik; `note_proposals` menyimpan draft asli dan receipt konfirmasi terpisah. Fragmen tool mentah tidak menjadi knowledge atau log tool umum. `note_chunks`/embeddings belum dibuat.
 
-**Masih terbuka:** kebijakan penghapusan/retensi final dan kebutuhan penyimpanan tool tambahan di fase berikutnya. MVP saat ini mempertahankan notes/history/proposals tanpa endpoint delete atau expiry; perubahan memerlukan review sebelum migrasi.
+**Retensi saat ini:** pemilik dapat menghapus permanen thread Main Chat beserta messages dan proposals/receipts melalui aksi terautentikasi P4.6F. Notes terkonfirmasi dan riwayat revisinya tetap disimpan; pending generation memblokir penghapusan hingga recovery yang ada menyelesaikannya. Tidak ada expiry otomatis atau penghapusan akun/project/notes. Kebijakan retensi lebih lanjut dan penyimpanan tool tambahan tetap memerlukan review terpisah.
 
 ## 12. Non-functional requirements
 
@@ -381,7 +381,7 @@ MVP dimulai dari pencarian teks dan metadata (project, judul, konten, tanggal) d
 
 1. Evaluasi biaya/harga provider, kebijakan pemrosesan data dan kontrol biaya operasional jangka panjang.
 2. Kebijakan penghapusan dan retensi final catatan/chat/proposal.
-3. Apakah semantic search diperlukan berdasarkan data uji, atau cukup PostgreSQL full-text/keyword terlebih dahulu; retrieval belum diimplementasikan.
+3. Apakah semantic search diperlukan berdasarkan evaluasi lanjutan; retrieval saat ini memakai pencarian substring literal PostgreSQL yang dibatasi ownership/project. Embeddings bukan persyaratan otomatis.
 4. Tempat deployment dan kebijakan backup/restore.
 5. Definisi tenant serta collaborative sharing **hanya jika** fase SaaS benar-benar disetujui.
 
