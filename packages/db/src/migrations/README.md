@@ -4,6 +4,21 @@
 
 The NOT APPLIED labels in the Phase 1C/2B reviews below record those earlier offline implementation stages, not the present remote state. Do not reapply old migrations on the basis of those historical labels. Production, permission changes and disposable database-write tests still require separate approval.
 
+## P5.4B — management proposals (local artifacts only, NOT APPLIED)
+
+PM approved the exact eight-column schema and local generation in [management proposal specification](../../../../docs/MANAGEMENT_PROPOSALS.md). Generated with installed Drizzle Kit **1.0.0-rc.5**:
+
+```sh
+cd packages/db
+bun run db:generate --name management_proposals
+```
+
+Artifacts: `20261128060549_management_proposals/{migration.sql,snapshot.json}`. Exactly two SQL statements create `management_proposals` and add its source-message RESTRICT FK. The table has eight columns, a UUID PK, source-message UNIQUE, five approved CHECKs and no standalone indexes/result FKs. SQL checks kind/status, JSON object/version/kind envelopes, receipt/status/confirmed-time consistency and 131,072-byte JSONB text caps. Strict application contracts impose the tighter 65,536-byte compact JSON cap, item/evidence/receipt validation and authorization.
+
+The v9 snapshot contains 17 create deltas belonging only to this table, with create-table/create-FK footprints. Its previous ID is task snapshot `573796db-74aa-43da-83d0-68621e8fa9a8`; new ID is `550aaee7-7200-41af-b28b-79a140ec368a`. No historical artifacts, existing tables, data, grants, RLS, triggers or deployment configuration change. Receipt result IDs are JSON, not FKs: legitimate task deletion remains allowed.
+
+**Not applied; no database connection or migration execution performed.** History and proposal services now select this table: apply only after separate PM approval of the exact SQL/target, baseline/history compatibility, backup/recovery/DDL timing and backend-only exposure/privileges. Existing Data API-disabled policy is retained; no platform or permission change is made or inferred from offline checks. Scripted SQL and schema metadata are not PostgreSQL CHECK/FK/MVCC/rollback evidence.
+
 ## P5.2 — structured tasks (local artifacts only, NOT APPLIED)
 
 PM explicitly approved the section-3 task schema and local generation, not execution. Generated with installed Drizzle Kit **1.0.0-rc.5** through the existing config/history:

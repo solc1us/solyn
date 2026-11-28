@@ -9,6 +9,14 @@
 - Do not instantiate `createWorkspaceService` with client/model identity. Its dependency seam is only for trusted server composition and offline tests. `server.ts` is guarded with `server-only` and obtains a fresh Better Auth session from request headers on every operation.
 - All operations enforce session, validation and ownership internally. Actions contain no duplicate business logic or extra HTTP API. Phase 1E adds path revalidation to successful mutation adapters, without changing the domain operations or response contracts.
 
+## P5.4B — authenticated management confirmation
+
+`confirmManagementProposal` implements explicit project creation (Main Chat only) or selected batch task creation (1–5 tasks, one owned project). See [exact contracts and transaction design](../../../../../docs/MANAGEMENT_PROPOSALS.md). It uses the existing fresh-session safe-result boundary and locks conversation SHARE → management proposal UPDATE → owned target project SHARE → selected evidence notes SHARE in deterministic UUID order. Small private transaction-compatible project/task creation cores are shared with manual creation; no nested independently committed service calls or note proposal refactor.
+
+Confirmation validates edited fields, fixed project scope, unique existing item subsets and current evidence/timestamps, even after clearing a source link. All selected tasks and the immutable receipt commit together; unselected items cannot be added by replay. Exact canonical replay returns original identities through current authorized availability projections, without writes or rechecking later source/task edits. Deleted/inaccessible results are unavailable without IDs/links and never recreated. Success `{proposal, replayed}` is returned only after transaction completion, with route revalidation afterward. Reserved task-update confirmation is explicitly disabled.
+
+Only the dedicated authenticated action is exposed; chat recovery/history is read-only. No AI tools, streaming integration or proposal UI is added. The generated management migration is **not applied**; separately approved rollout must precede enabling services/history against that target. Offline scripted transaction checks do not prove real PostgreSQL rollback/concurrency or authenticated browser behavior.
+
 ## Phase 1E frontend
 
 - `(workspace)` routes provide the authenticated shell, dashboard, project list/create/detail/edit, and note create/edit screens. Server pages call `workspace` directly; client forms and pagination call the existing Server Functions. The shell's session gate is not a replacement for per-operation authorization.

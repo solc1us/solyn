@@ -42,11 +42,18 @@ type Step = {
 // SQL scoping/transaction control flow, not actual PostgreSQL enforcement.
 function fixture(steps: Step[] = [], userId: string | null = "user-a") {
   const db = createDb({ DATABASE_URL: "postgresql://unused:unused@127.0.0.1:1/unused" });
-  const remaining = [...steps];
+  // Legacy scenarios contain no management proposals; still exercise their
+  // separate deletion statement and allow the new page-bounded empty read.
+  const remaining = steps.flatMap((step) =>
+    step.sql.source.startsWith('^delete from "note_proposals"')
+      ? [{ sql: /^delete from "management_proposals"/, inspect: messageScoped }, step]
+      : [step],
+  );
   const calls: string[] = [];
   const assertionErrors: unknown[] = [];
   const query = async (config: { text: string }, params: unknown[] = []) => {
     calls.push(config.text);
+    if (config.text.startsWith('select "management_proposals".')) return { rows: [], rowCount: 0 };
     const step = remaining.shift();
     try {
       assert.ok(step, `Unexpected offline SQL: ${config.text}`);
@@ -341,7 +348,7 @@ test("permanent delete orders proposals, messages, conversation in one owned tra
   });
   exhausted(f);
   assert.equal(f.calls[0], "begin isolation level read committed");
-  assert.equal(f.calls.filter((s) => s.startsWith("delete")).length, 3);
+  assert.equal(f.calls.filter((s) => s.startsWith("delete")).length, 4);
   assert.ok(
     !f.calls.some((s) => /^(delete from|update|insert into) "(notes|note_revisions)"/.test(s)),
   );
@@ -453,7 +460,9 @@ function deleteFixture(failAt?: string) {
         assert.ok(staged, "Every child operation must follow the owned conversation lock");
         let rows: unknown[][] = [];
         if (/^select .*from "chat_messages"/.test(text)) rows = staged.pending ? [["pending"]] : [];
-        else if (text.startsWith('delete from "note_proposals"')) staged.proposals = 0;
+        else if (text.startsWith('delete from "management_proposals"')) {
+          /* No management rows in this legacy simulator. */
+        } else if (text.startsWith('delete from "note_proposals"')) staged.proposals = 0;
         else if (text.startsWith('delete from "chat_messages"')) {
           assert.equal(staged.proposals, 0);
           staged.messages = 0;

@@ -118,6 +118,7 @@ function fixture(
       messages: database.map((m) => ({
         ...m,
         proposal: m.proposal ?? null,
+        managementProposal: null,
         sources: m.sources ?? [],
         modelId: m.role === "assistant" ? "test-model" : null,
         createdAt: now,
@@ -220,6 +221,7 @@ function sourceHistory(sources: SourceView[] = [source]): ChatView {
       ...message,
       sources: message.role === "assistant" ? sources : [],
       proposal: null,
+      managementProposal: null,
       modelId: message.role === "assistant" ? "test-model" : null,
       createdAt: now,
       updatedAt: now,
@@ -2090,6 +2092,7 @@ test("off-page unresolved saves remain dirty and expose the session guard to sig
         ...message,
         id: crypto.randomUUID(),
         proposal: null,
+        managementProposal: null,
         sources: message.sources ?? [],
         modelId: message.role === "assistant" ? "test-model" : null,
         createdAt: now,

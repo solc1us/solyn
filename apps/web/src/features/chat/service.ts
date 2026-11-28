@@ -5,7 +5,23 @@ import {
 } from "@solyn/db/schema/chat";
 import { notes, projects } from "@solyn/db/schema/workspace";
 import { noteProposals } from "@solyn/db/schema/note-proposals";
-import { and, asc, desc, eq, exists, inArray, isNull, ne, or, sql, type SQL } from "drizzle-orm";
+import { managementProposals } from "@solyn/db/schema/management-proposals";
+import * as management from "./management-contracts";
+import { readManagementProposals, managementReferencesMatch } from "./management-proposals";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  exists,
+  inArray,
+  isNull,
+  ne,
+  notExists,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { z } from "zod";
 
@@ -141,6 +157,7 @@ export function createChatService({
       .where(
         and(
           condition,
+          noManagementProposal(messages.id),
           owned(ownerId),
           eq(messages.role, "assistant"),
           eq(messages.status, "completed"),
@@ -195,6 +212,26 @@ export function createChatService({
       (await readProposals(tx, ownerId, eq(noteProposals.sourceMessageId, message.id))).get(
         message.id,
       ) ?? null
+    );
+  }
+
+  const noManagementProposal = (messageId: string | typeof messages.id) =>
+    notExists(
+      db
+        .select({ id: managementProposals.id })
+        .from(managementProposals)
+        .where(eq(managementProposals.sourceMessageId, messageId)),
+    );
+  async function managementFor(tx: Transaction, ownerId: string, message: Message) {
+    if (message.role !== "assistant" || message.status !== "completed") return null;
+    return (
+      (
+        await readManagementProposals(
+          tx,
+          ownerId,
+          eq(managementProposals.sourceMessageId, message.id),
+        )
+      ).get(message.id) ?? null
     );
   }
 
@@ -436,6 +473,19 @@ export function createChatService({
                 "CONFLICT",
                 "Resolve the pending reply before deleting this chat.",
               );
+            await tx.delete(managementProposals).where(
+              exists(
+                tx
+                  .select({ id: messages.id })
+                  .from(messages)
+                  .where(
+                    and(
+                      eq(messages.id, managementProposals.sourceMessageId),
+                      ownedMessages(ownerId, conversation.id),
+                    ),
+                  ),
+              ),
+            );
             await tx.delete(noteProposals).where(
               exists(
                 tx
@@ -481,6 +531,23 @@ export function createChatService({
           .orderBy(desc(conversations.updatedAt), desc(conversations.id))
           .limit(value.limit)
           .offset(value.offset),
+      );
+    },
+    getManagementProposal(input: unknown) {
+      return run(management.getManagementProposalInput, input, (value, ownerId) =>
+        db.transaction(
+          async (tx) => {
+            const views = await readManagementProposals(
+              tx,
+              ownerId,
+              eq(managementProposals.id, value.proposalId),
+            );
+            const proposal = [...views.values()][0];
+            if (!proposal) throw missing();
+            return proposal;
+          },
+          { isolationLevel: "repeatable read", accessMode: "read only" },
+        ),
       );
     },
     getNoteProposal(input: unknown) {
@@ -529,12 +596,20 @@ export function createChatService({
             const proposals = sourceIds.length
               ? await readProposals(tx, ownerId, inArray(noteProposals.sourceMessageId, sourceIds))
               : new Map<string, contracts.ProposalView>();
+            const managementViews = sourceIds.length
+              ? await readManagementProposals(
+                  tx,
+                  ownerId,
+                  inArray(managementProposals.sourceMessageId, sourceIds),
+                )
+              : new Map<string, management.ManagementProposalView>();
             const sources = await readSources(tx, ownerId, conversation.projectId, page);
             return {
               conversation,
               messages: (value.latest ? page.reverse() : page).map((m) => ({
                 ...publicMessage(m, sources.get(m.id)),
                 proposal: proposals.get(m.id) ?? null,
+                managementProposal: managementViews.get(m.id) ?? null,
               })),
               pendingTurn: pending
                 ? { turnId: pending.turnId, abandoned: abandoned(pending, now) }
@@ -620,6 +695,7 @@ export function createChatService({
               if (user.content !== value.content || assistant.modelId !== value.modelId)
                 throw conflict();
               const proposal = await proposalFor(tx, ownerId, assistant);
+              const managementProposal = await managementFor(tx, ownerId, assistant);
               const sources = await readSources(tx, ownerId, conversation.projectId, [
                 user,
                 assistant,
@@ -630,6 +706,7 @@ export function createChatService({
                 replayed: true,
                 abandoned: abandoned(assistant, now),
                 proposal,
+                managementProposal,
               };
             }
             const [pending] = await tx
@@ -677,6 +754,7 @@ export function createChatService({
               replayed: false,
               abandoned: false,
               proposal: null,
+              managementProposal: null,
             };
           },
           { isolationLevel: "read committed" },
@@ -693,6 +771,7 @@ export function createChatService({
               .from(messages)
               .where(
                 and(
+                  noManagementProposal(messages.id),
                   ownedMessages(ownerId, conversation.id),
                   eq(messages.turnId, value.turnId),
                   eq(messages.role, "assistant"),
@@ -769,6 +848,138 @@ export function createChatService({
               receipt: null,
             });
             return { ...publicMessage(completed), proposal };
+          },
+          { isolationLevel: "read committed" },
+        ),
+      );
+    },
+    // Internal server completion only. No Server Action/stream request exposes
+    // caller-controlled assistant writes; P5.4C will supply trusted tool evidence.
+    completeManagementProposal(input: unknown) {
+      return run(management.completeManagementProposalInput, input, (value, ownerId) =>
+        db.transaction(
+          async (tx) => {
+            if (value.draft.kind === "update_task")
+              throw new ChatError("INVALID_INPUT", "Task update proposals are not enabled.");
+            const conversation = await lock(tx, ownerId, value.conversationId);
+            const [response] = await tx
+              .select(messageFields)
+              .from(messages)
+              .where(
+                and(
+                  ownedMessages(ownerId, conversation.id),
+                  eq(messages.turnId, value.turnId),
+                  eq(messages.role, "assistant"),
+                  notExists(
+                    tx
+                      .select({ id: noteProposals.id })
+                      .from(noteProposals)
+                      .where(eq(noteProposals.sourceMessageId, messages.id)),
+                  ),
+                ),
+              );
+            if (!response) throw missing();
+            if (response.status !== "pending") {
+              const [stored] = await tx
+                .select({ draft: managementProposals.draft })
+                .from(managementProposals)
+                .where(eq(managementProposals.sourceMessageId, response.id));
+              if (
+                response.status !== "completed" ||
+                response.content !== value.content ||
+                !stored ||
+                !management.managementEqual(
+                  management.managementDraftSchema.parse(stored.draft),
+                  value.draft,
+                ) ||
+                !management.managementEqual(
+                  contracts.sourceRefsSchema.nullable().parse(response.sourceRefs ?? null),
+                  value.sourceRefs,
+                )
+              )
+                throw conflict();
+              const managementProposal = await managementFor(tx, ownerId, response);
+              if (!managementProposal) throw missing();
+              const sources = await readSources(tx, ownerId, conversation.projectId, [response]);
+              return { ...publicMessage(response, sources.get(response.id)), managementProposal };
+            }
+            const [existing] = await tx
+              .select({ id: managementProposals.id })
+              .from(managementProposals)
+              .where(eq(managementProposals.sourceMessageId, response.id));
+            if (existing) throw conflict();
+            if (
+              (value.draft.kind === "create_project" && conversation.projectId !== null) ||
+              (value.draft.kind === "create_tasks" &&
+                value.draft.scopedProjectId !== conversation.projectId) ||
+              (conversation.projectId !== null &&
+                value.sourceRefs?.some((ref) => ref.projectId !== conversation.projectId)) ||
+              !managementReferencesMatch(value.draft, value.sourceRefs)
+            )
+              throw new ChatError("INVALID_INPUT", "Invalid proposal scope or evidence.");
+            const [user] = await tx
+              .select({ content: messages.content })
+              .from(messages)
+              .where(
+                and(
+                  ownedMessages(ownerId, conversation.id),
+                  eq(messages.turnId, value.turnId),
+                  eq(messages.role, "user"),
+                  eq(messages.status, "completed"),
+                ),
+              );
+            if (!user) throw missing();
+            if (conversation.projectId) {
+              const [project] = await tx
+                .select({ id: projects.id })
+                .from(projects)
+                .where(and(eq(projects.id, conversation.projectId), eq(projects.ownerId, ownerId)))
+                .for("share");
+              if (!project) throw missing();
+            }
+            // Server-held retrieval references are private; reauthorize and lock all
+            // sources in stable order, including references unused by selected items.
+            const refs = [...(value.sourceRefs ?? [])].sort((a, b) =>
+              a.noteId.localeCompare(b.noteId),
+            );
+            for (const ref of refs) {
+              const [note] = await tx
+                .select({ id: notes.id, updatedAt: notes.updatedAt })
+                .from(notes)
+                .innerJoin(projects, eq(projects.id, notes.projectId))
+                .where(
+                  and(
+                    eq(notes.id, ref.noteId),
+                    eq(notes.projectId, ref.projectId),
+                    eq(projects.ownerId, ownerId),
+                  ),
+                )
+                .for("share", { of: notes });
+              if (!note) throw missing();
+              if (note.updatedAt.toISOString() !== ref.retrievedUpdatedAt) throw conflict();
+            }
+            const now = await databaseNow(tx);
+            if (abandoned(response, now)) throw conflict();
+            const updatedAt = activityTime(now, conversation.updatedAt);
+            const completed = await setTerminal(
+              tx,
+              ownerId,
+              response,
+              "completed",
+              value.content,
+              updatedAt,
+              value.sourceRefs,
+            );
+            const [inserted] = await tx
+              .insert(managementProposals)
+              .values({ sourceMessageId: response.id, kind: value.draft.kind, draft: value.draft })
+              .returning({ id: managementProposals.id });
+            if (!inserted) throw new Error("Missing management proposal insert");
+            await touch(tx, ownerId, conversation.id, updatedAt);
+            const managementProposal = await managementFor(tx, ownerId, completed);
+            if (!managementProposal) throw missing();
+            const sources = await readSources(tx, ownerId, conversation.projectId, [completed]);
+            return { ...publicMessage(completed, sources.get(completed.id)), managementProposal };
           },
           { isolationLevel: "read committed" },
         ),

@@ -1,0 +1,270 @@
+{
+  "type": "diff",
+  "version": "9",
+  "dialect": "postgres",
+  "id": "550aaee7-7200-41af-b28b-79a140ec368a",
+  "prevIds": ["573796db-74aa-43da-83d0-68621e8fa9a8"],
+  "footprints": [
+    {
+      "statementType": "create_table",
+      "statementTarget": ["table", "public", "management_proposals"],
+      "writes": [
+        "s|tbl|public.management_proposals",
+        "n|tbl|public.management_proposals",
+        "e|tbl|public.management_proposals",
+        "n|rel|public.management_proposals",
+        "n|type|public.management_proposals",
+        "n|rel|public.management_proposals_pkey",
+        "n|rel|public.management_proposals_source_message_unique"
+      ],
+      "reads": ["n|sch|public"]
+    },
+    {
+      "statementType": "create_fk",
+      "statementTarget": ["table", "public", "management_proposals"],
+      "writes": [
+        "s|fk|public.management_proposals.management_proposals_source_message_fk",
+        "n|fk|public.management_proposals.management_proposals_source_message_fk",
+        "e|fk|public.management_proposals.management_proposals_source_message_fk",
+        "n|con|public.management_proposals.management_proposals_source_message_fk"
+      ],
+      "reads": [
+        "n|tbl|public.management_proposals",
+        "n|sch|public",
+        "n|tbl|public.chat_messages",
+        "n|sch|public",
+        "n|col|public.management_proposals.source_message_id",
+        "n|col|public.chat_messages.id",
+        "e|uniqueness|public.chat_messages.id"
+      ]
+    }
+  ],
+  "deltas": [
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "name": "management_proposals",
+        "isRlsEnabled": false,
+        "entityType": "tables"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "management_proposals",
+        "name": "id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "gen_random_uuid()",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "management_proposals",
+        "name": "source_message_id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "management_proposals",
+        "name": "kind",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "management_proposals",
+        "name": "draft",
+        "type": "jsonb",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "management_proposals",
+        "name": "status",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "'proposed'",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "management_proposals",
+        "name": "receipt",
+        "type": "jsonb",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "management_proposals",
+        "name": "created_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "now()",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "management_proposals",
+        "name": "confirmed_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "management_proposals",
+        "name": "management_proposals_source_message_fk",
+        "nameExplicit": true,
+        "columns": ["source_message_id"],
+        "schemaTo": "public",
+        "tableTo": "chat_messages",
+        "columnsTo": ["id"],
+        "onUpdate": "NO ACTION",
+        "onDelete": "RESTRICT",
+        "entityType": "fks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "management_proposals",
+        "name": "management_proposals_pkey",
+        "columns": ["id"],
+        "nameExplicit": false,
+        "entityType": "pks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "management_proposals",
+        "name": "management_proposals_source_message_unique",
+        "nameExplicit": true,
+        "columns": ["source_message_id"],
+        "nullsNotDistinct": false,
+        "entityType": "uniques"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "management_proposals",
+        "name": "management_proposals_kind_valid",
+        "value": "\"kind\" in ('create_project', 'create_tasks', 'update_task')",
+        "entityType": "checks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "management_proposals",
+        "name": "management_proposals_status_valid",
+        "value": "\"status\" in ('proposed', 'confirmed')",
+        "entityType": "checks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "management_proposals",
+        "name": "management_proposals_draft_envelope",
+        "value": "jsonb_typeof(\"draft\") = 'object' and coalesce(\"draft\"->'schemaVersion' = '1'::jsonb, false) and coalesce(\"draft\"->'kind' = to_jsonb(\"kind\"), false)",
+        "entityType": "checks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "management_proposals",
+        "name": "management_proposals_receipt_consistent",
+        "value": "(\"status\" = 'proposed' and \"receipt\" is null and \"confirmed_at\" is null) or (\"status\" = 'confirmed' and \"receipt\" is not null and \"confirmed_at\" is not null and jsonb_typeof(\"receipt\") = 'object' and coalesce(\"receipt\"->'schemaVersion' = '1'::jsonb, false) and coalesce(\"receipt\"->'kind' = to_jsonb(\"kind\"), false))",
+        "entityType": "checks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "management_proposals",
+        "name": "management_proposals_json_size",
+        "value": "octet_length(\"draft\"::text) <= 131072 and (\"receipt\" is null or octet_length(\"receipt\"::text) <= 131072)",
+        "entityType": "checks"
+      }
+    }
+  ]
+}

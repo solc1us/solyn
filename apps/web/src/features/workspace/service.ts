@@ -2,7 +2,19 @@ import type { Database } from "@solyn/db";
 import { noteRevisions, notes, projects, tasks } from "@solyn/db/schema/workspace";
 import { chatConversations, chatMessages } from "@solyn/db/schema/chat";
 import { noteProposals } from "@solyn/db/schema/note-proposals";
-import { and, desc, eq, exists, gte, isNull, lte, max, or, sql } from "drizzle-orm";
+import { managementProposals } from "@solyn/db/schema/management-proposals";
+import {
+  confirmManagementProposalInput,
+  approvedManagementPayload,
+  managementEqual,
+  managementReceiptSchema,
+} from "../chat/management-contracts";
+import {
+  parseManagementProposal,
+  readManagementProposals,
+  managementReferencesMatch,
+} from "../chat/management-proposals";
+import { and, desc, eq, exists, gte, isNull, lte, max, notExists, or, sql } from "drizzle-orm";
 import { confirmNoteProposalInput } from "../chat/contracts";
 import type { z } from "zod";
 
@@ -183,6 +195,43 @@ export function createWorkspaceService(dependencies: {
       .for("share", { of: notes });
     if (!note) throw missing();
   }
+  async function createProjectInTransaction(
+    tx: Pick<Transaction, "insert">,
+    value: z.output<typeof contracts.createProjectInput>,
+    ownerId: string,
+  ) {
+    const [project] = await tx
+      .insert(projects)
+      .values({ ownerId, name: value.name, description: value.description ?? null })
+      .returning(projectFields);
+    if (!project) throw new Error("Insert returned no project");
+    return project;
+  }
+  async function createTaskInTransaction(
+    tx: Transaction,
+    value: z.output<typeof contracts.createTaskInput>,
+    ownerId: string,
+  ) {
+    await lockOwnedProject(tx, value.projectId, ownerId);
+    await validateTaskSource(tx, value.projectId, ownerId, value.sourceNoteId ?? null);
+    const [task] = await tx
+      .insert(tasks)
+      .values({
+        projectId: value.projectId,
+        title: value.title,
+        description: value.description ?? null,
+        status: value.status,
+        priority: value.priority ?? null,
+        assignee: value.assignee ?? null,
+        dueDate: value.dueDate ?? null,
+        sourceNoteId: value.sourceNoteId ?? null,
+        version: 1,
+        completedAt: value.status === "done" ? sql`now()` : null,
+      })
+      .returning(taskFields);
+    if (!task) throw new Error("Insert returned no task");
+    return task;
+  }
   async function readTaskList(
     value: z.output<typeof contracts.listOwnedTasksInput>,
     ownerId: string,
@@ -215,30 +264,9 @@ export function createWorkspaceService(dependencies: {
   return {
     createTask(input: unknown) {
       return run(contracts.createTaskInput, input, (value, ownerId) =>
-        db.transaction(
-          async (tx) => {
-            await lockOwnedProject(tx, value.projectId, ownerId);
-            await validateTaskSource(tx, value.projectId, ownerId, value.sourceNoteId ?? null);
-            const [task] = await tx
-              .insert(tasks)
-              .values({
-                projectId: value.projectId,
-                title: value.title,
-                description: value.description ?? null,
-                status: value.status,
-                priority: value.priority ?? null,
-                assignee: value.assignee ?? null,
-                dueDate: value.dueDate ?? null,
-                sourceNoteId: value.sourceNoteId ?? null,
-                version: 1,
-                completedAt: value.status === "done" ? sql`now()` : null,
-              })
-              .returning(taskFields);
-            if (!task) throw new Error("Insert returned no task");
-            return task;
-          },
-          { isolationLevel: "read committed" },
-        ),
+        db.transaction((tx) => createTaskInTransaction(tx, value, ownerId), {
+          isolationLevel: "read committed",
+        }),
       );
     },
     getTask(input: unknown) {
@@ -324,6 +352,172 @@ export function createWorkspaceService(dependencies: {
         ),
       );
     },
+    confirmManagementProposal(input: unknown) {
+      return run(confirmManagementProposalInput, input, (value, ownerId) =>
+        db.transaction(
+          async (tx) => {
+            const changed = () =>
+              new WorkspaceError(
+                "CONFLICT",
+                "This proposal has changed. Reload it before retrying.",
+              );
+            // Reserved contracts are parsed, but execution is deliberately disabled.
+            if (value.kind === "update_task")
+              throw new WorkspaceError("INVALID_INPUT", "Task update proposals are not enabled.");
+            const sourceCondition = and(
+              ownedConversation(ownerId),
+              eq(chatMessages.role, "assistant"),
+              eq(chatMessages.status, "completed"),
+            );
+            const [source] = await tx
+              .select({ conversationId: chatMessages.conversationId })
+              .from(managementProposals)
+              .innerJoin(chatMessages, eq(chatMessages.id, managementProposals.sourceMessageId))
+              .innerJoin(chatConversations, eq(chatConversations.id, chatMessages.conversationId))
+              .where(and(eq(managementProposals.id, value.proposalId), sourceCondition));
+            if (!source) throw missing();
+            const [conversation] = await tx
+              .select({ id: chatConversations.id, projectId: chatConversations.projectId })
+              .from(chatConversations)
+              .where(
+                and(eq(chatConversations.id, source.conversationId), ownedConversation(ownerId)),
+              )
+              .for("share", { of: chatConversations });
+            if (!conversation) throw missing();
+            const [row] = await tx
+              .select({
+                id: managementProposals.id,
+                kind: managementProposals.kind,
+                status: managementProposals.status,
+                draft: managementProposals.draft,
+                receipt: managementProposals.receipt,
+                confirmedAt: managementProposals.confirmedAt,
+                sourceRefs: chatMessages.sourceRefs,
+                mixed: exists(
+                  tx
+                    .select({ id: noteProposals.id })
+                    .from(noteProposals)
+                    .where(eq(noteProposals.sourceMessageId, chatMessages.id)),
+                ),
+              })
+              .from(managementProposals)
+              .innerJoin(chatMessages, eq(chatMessages.id, managementProposals.sourceMessageId))
+              .innerJoin(chatConversations, eq(chatConversations.id, chatMessages.conversationId))
+              .where(
+                and(
+                  eq(managementProposals.id, value.proposalId),
+                  eq(chatMessages.conversationId, conversation.id),
+                  sourceCondition,
+                ),
+              )
+              .for("update", { of: managementProposals });
+            if (!row) throw missing();
+            if (row.mixed) throw changed();
+            const { draft, receipt } = parseManagementProposal(row, conversation.projectId);
+            if (!managementReferencesMatch(draft, row.sourceRefs))
+              throw new Error("Invalid stored provenance");
+            if (draft.kind !== value.kind) throw changed();
+            const approved = approvedManagementPayload(value);
+            const replayed = receipt !== null;
+            if (receipt) {
+              // Replay uses immutable approval, never the current task/source contents.
+              if (receipt.kind !== value.kind || !managementEqual(receipt.approved, approved))
+                throw changed();
+            } else {
+              let nextReceipt;
+              if (value.kind === "create_project") {
+                if (conversation.projectId !== null || draft.kind !== "create_project")
+                  throw changed();
+                const project = await createProjectInTransaction(tx, value, ownerId);
+                nextReceipt = {
+                  schemaVersion: 1,
+                  kind: value.kind,
+                  approved,
+                  result: { projectId: project.id },
+                };
+              } else {
+                if (draft.kind !== "create_tasks") throw changed();
+                await lockOwnedProject(tx, value.projectId, ownerId);
+                if (conversation.projectId !== null && value.projectId !== conversation.projectId)
+                  throw changed();
+                const selected = value.items.map((item) => {
+                  const original = draft.items.find((original) => original.itemId === item.itemId);
+                  if (
+                    !original ||
+                    (item.fields.sourceNoteId !== null &&
+                      item.fields.sourceNoteId !== original.fields.sourceNoteId)
+                  )
+                    throw changed();
+                  return { ...item, evidence: original.evidence };
+                });
+                // Evidence is checked even if the user clears sourceNoteId. Pre-lock
+                // every referenced note before inserting any task, in UUID order.
+                const evidence = selected.flatMap((item) =>
+                  item.evidence.type === "retrieved_note" ? [item.evidence] : [],
+                );
+                for (const noteId of [...new Set(evidence.map((e) => e.noteId))].sort()) {
+                  const [note] = await tx
+                    .select({ id: notes.id, updatedAt: notes.updatedAt })
+                    .from(notes)
+                    .where(ownedNote(value.projectId, ownerId, noteId))
+                    .for("share", { of: notes });
+                  if (!note) throw missing();
+                  if (
+                    evidence.some(
+                      (e) =>
+                        e.noteId === noteId &&
+                        (e.projectId !== value.projectId ||
+                          e.retrievedUpdatedAt !== note.updatedAt.toISOString()),
+                    )
+                  )
+                    throw changed();
+                }
+                const results = [];
+                for (const item of selected) {
+                  const task = await createTaskInTransaction(
+                    tx,
+                    { projectId: value.projectId, ...item.fields },
+                    ownerId,
+                  );
+                  results.push({
+                    itemId: item.itemId,
+                    taskId: task.id,
+                    projectId: task.projectId,
+                    version: 1,
+                  });
+                }
+                nextReceipt = { schemaVersion: 1, kind: value.kind, approved, results };
+              }
+              const validatedReceipt = managementReceiptSchema.parse(nextReceipt);
+              const [updated] = await tx
+                .update(managementProposals)
+                .set({
+                  status: "confirmed",
+                  receipt: validatedReceipt,
+                  confirmedAt: sql`clock_timestamp()`,
+                })
+                .where(
+                  and(
+                    eq(managementProposals.id, row.id),
+                    eq(managementProposals.status, "proposed"),
+                  ),
+                )
+                .returning({ id: managementProposals.id });
+              if (!updated) throw changed();
+            }
+            const views = await readManagementProposals(
+              tx,
+              ownerId,
+              eq(managementProposals.id, row.id),
+            );
+            const proposal = [...views.values()][0];
+            if (!proposal) throw missing();
+            return { proposal, replayed };
+          },
+          { isolationLevel: "read committed" },
+        ),
+      );
+    },
     confirmNoteProposal(input: unknown) {
       return run(confirmNoteProposalInput, input, (value, ownerId) =>
         db.transaction(
@@ -338,6 +532,12 @@ export function createWorkspaceService(dependencies: {
               .where(
                 and(
                   eq(noteProposals.id, value.proposalId),
+                  notExists(
+                    tx
+                      .select({ id: managementProposals.id })
+                      .from(managementProposals)
+                      .where(eq(managementProposals.sourceMessageId, chatMessages.id)),
+                  ),
                   ownedConversation(ownerId),
                   eq(chatMessages.role, "assistant"),
                   eq(chatMessages.status, "completed"),
@@ -368,6 +568,12 @@ export function createWorkspaceService(dependencies: {
               .where(
                 and(
                   eq(noteProposals.id, value.proposalId),
+                  notExists(
+                    tx
+                      .select({ id: managementProposals.id })
+                      .from(managementProposals)
+                      .where(eq(managementProposals.sourceMessageId, chatMessages.id)),
+                  ),
                   eq(chatMessages.conversationId, conversation.id),
                   ownedConversation(ownerId),
                   eq(chatMessages.role, "assistant"),
@@ -453,14 +659,9 @@ export function createWorkspaceService(dependencies: {
       });
     },
     createProject(input: unknown) {
-      return run(contracts.createProjectInput, input, async (value, ownerId) => {
-        const [project] = await db
-          .insert(projects)
-          .values({ ownerId, name: value.name, description: value.description ?? null })
-          .returning(projectFields);
-        if (!project) throw new Error("Insert returned no project");
-        return project;
-      });
+      return run(contracts.createProjectInput, input, (value, ownerId) =>
+        createProjectInTransaction(db, value, ownerId),
+      );
     },
     updateProject(input: unknown) {
       return run(contracts.updateProjectInput, input, async (value, ownerId) => {

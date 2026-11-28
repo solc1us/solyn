@@ -41,9 +41,19 @@ const workspaceRelations = defineRelations(schema, (r) => ({
       from: r.chatMessages.conversationId,
       to: r.chatConversations.id,
     }),
+    managementProposal: r.one.managementProposals({
+      from: r.chatMessages.id,
+      to: r.managementProposals.sourceMessageId,
+    }),
     proposal: r.one.noteProposals({
       from: r.chatMessages.id,
       to: r.noteProposals.sourceMessageId,
+    }),
+  },
+  managementProposals: {
+    sourceMessage: r.one.chatMessages({
+      from: r.managementProposals.sourceMessageId,
+      to: r.chatMessages.id,
     }),
   },
   noteProposals: {

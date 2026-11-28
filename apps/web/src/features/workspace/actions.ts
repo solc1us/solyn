@@ -77,6 +77,25 @@ export async function createNote(input: unknown) {
   }
   return result;
 }
+export async function confirmManagementProposal(input: unknown) {
+  const result = await workspace.confirmManagementProposal(input);
+  if (result.ok) {
+    revalidatePath("/dashboard");
+    revalidatePath("/projects");
+    revalidatePath("/tasks");
+    const receipt = result.data.proposal.receipt;
+    if (receipt?.kind === "create_project" && receipt.result.state === "available")
+      revalidatePath(receipt.result.href);
+    if (receipt?.kind === "create_tasks")
+      for (const task of receipt.results) {
+        if (task.state === "available") {
+          revalidatePath(`/projects/${task.projectId}`);
+          revalidatePath(task.href);
+        }
+      }
+  }
+  return result;
+}
 export async function confirmNoteProposal(input: unknown) {
   const result = await workspace.confirmNoteProposal(input);
   if (result.ok) {

@@ -28,6 +28,9 @@ export async function deleteConversation(input: unknown) {
 export async function listConversations(input: unknown = {}) {
   return chat.listConversations(input);
 }
+export async function getManagementProposal(input: unknown) {
+  return chat.getManagementProposal(input);
+}
 export async function getNoteProposal(input: unknown) {
   return chat.getNoteProposal(input);
 }

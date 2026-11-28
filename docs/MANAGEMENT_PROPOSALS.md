@@ -1,6 +1,6 @@
 # Management proposals — P5.4A approval design
 
-**Proposed, not implemented or approved for migration.** Baseline: `f6a116603c9aedc1fa74d8e487bd0a410942a17b`, branch `feat/phase-5-project-management`. Only the separate database CLI environment fix is implemented in this task. No management schema, tools, confirmation actions or UI are added.
+**P5.4B: schema, persistence and confirmation backend implemented; migration NOT APPLIED.** PM approved this eight-column design, strict contracts and local artifact generation after P5.4A. Implementation baseline: `85fb5363b3454c64bb789d6ab820497f1b727217`, branch `feat/phase-5-project-management`. AI tools, inference/stream integration, client transport and proposal UI remain P5.4C work. Reserved task-update execution remains disabled until P5.5. The sections below retain the approved design; Section 6 records implementation boundaries.
 
 ## 1. Architecture fit and exact proposed migration
 
@@ -45,7 +45,7 @@ CREATE TABLE public.management_proposals (
 );
 ```
 
-Exactly one new table, eight columns, PK, one source UNIQUE, one RESTRICT FK and five CHECKs. Only PK/source-UNIQUE indexes; page reads use bounded source IDs, confirmation uses PK. No standalone indexes, task/project/note result FKs, SQL enum types, triggers, backfill, grants, RLS, existing-table changes or data rewrites. Later approval would add the schema export/relations and one locally generated incremental SQL/snapshot pair extending the existing task migration. Generation and execution require separate gates; neither occurs here.
+Exactly one new table, eight columns, PK, one source UNIQUE, one RESTRICT FK and five CHECKs. Only PK/source-UNIQUE indexes; page reads use bounded source IDs, confirmation uses PK. No standalone indexes, task/project/note result FKs, SQL enum types, triggers, backfill, grants, RLS, existing-table changes or data rewrites. P5.4B adds the schema export/relations and the locally generated incremental `20261128060549_management_proposals/{migration.sql,snapshot.json}` pair extending the existing task migration. Generation is approved and complete; execution remains prohibited.
 
 JSONB is appropriate for three small closed payload families, not arbitrary operations. Strict nested Zod validation enforces every field below on insertion, confirmation and reads; SQL only defends the envelope/lifecycle/size. Drizzle `$type` is not runtime validation. Service checks additionally enforce assistant/completed source, scope, immutable draft/receipt and atomic transitions. No DB-only claim of cross-table ownership or at-most-one proposal across the two independent proposal tables: the conversation-lock completion protocol must reject a source already carrying either type. Raw writers must remain backend-only.
 
@@ -56,21 +56,26 @@ Notation below describes strict objects at **every nesting level**; reject unkno
 Shared types:
 
 ```ts
-type Status = 'todo' | 'in_progress' | 'blocked' | 'done';
-type Priority = 'urgent' | 'high' | 'medium' | 'low' | null;
+type Status = "todo" | "in_progress" | "blocked" | "done";
+type Priority = "urgent" | "high" | "medium" | "low" | null;
 type TaskFields = {
-  title: string;                    // trimmed nonblank, max 300 JS units
-  description: string | null;        // max 5,000
-  status: Status;                    // default todo only when not supplied
+  title: string; // trimmed nonblank, max 300 JS units
+  description: string | null; // max 5,000
+  status: Status; // default todo only when not supplied
   priority: Priority;
-  assignee: string | null;           // max 200
-  dueDate: string | null;            // real YYYY-MM-DD, years 0001–9999
+  assignee: string | null; // max 200
+  dueDate: string | null; // real YYYY-MM-DD, years 0001–9999
   sourceNoteId: UUID | null;
 };
 type Evidence =
-  | { type: 'user_message' }
-  | { type: 'retrieved_note'; noteId: UUID; projectId: UUID;
-      retrievedUpdatedAt: ISODateTime; excerptOnly: true };
+  | { type: "user_message" }
+  | {
+      type: "retrieved_note";
+      noteId: UUID;
+      projectId: UUID;
+      retrievedUpdatedAt: ISODateTime;
+      excerptOnly: true;
+    };
 type Changes = Partial<TaskFields>; // at least one key; omission preserves, null clears
 ```
 
@@ -80,13 +85,21 @@ Immutable persisted draft union:
 
 ```ts
 type Draft =
-  | { schemaVersion: 1; kind: 'create_project';
-      name: string; description: string | null }
-  | { schemaVersion: 1; kind: 'create_tasks';
+  | { schemaVersion: 1; kind: "create_project"; name: string; description: string | null }
+  | {
+      schemaVersion: 1;
+      kind: "create_tasks";
       scopedProjectId: UUID | null;
-      items: Array<{ itemId: number; fields: TaskFields; evidence: Evidence }> }
-  | { schemaVersion: 1; kind: 'update_task';
-      taskId: UUID; projectId: UUID; expectedVersion: number; changes: Changes };
+      items: Array<{ itemId: number; fields: TaskFields; evidence: Evidence }>;
+    }
+  | {
+      schemaVersion: 1;
+      kind: "update_task";
+      taskId: UUID;
+      projectId: UUID;
+      expectedVersion: number;
+      changes: Changes;
+    };
 ```
 
 - Project name is trimmed/nonblank, max 200; description max 5,000 or null. Main Chat only. Project creation never includes initial tasks: a subsequent task proposal/confirmation is a distinct operation.
@@ -100,12 +113,20 @@ Explicit user-confirmation request union (not a model tool):
 
 ```ts
 type Confirmation =
-  | { proposalId: UUID; kind: 'create_project';
-      name: string; description: string | null }
-  | { proposalId: UUID; kind: 'create_tasks'; projectId: UUID;
-      items: Array<{ itemId: number; fields: TaskFields }> }
-  | { proposalId: UUID; kind: 'update_task'; taskId: UUID;
-      expectedVersion: number; changes: Changes };
+  | { proposalId: UUID; kind: "create_project"; name: string; description: string | null }
+  | {
+      proposalId: UUID;
+      kind: "create_tasks";
+      projectId: UUID;
+      items: Array<{ itemId: number; fields: TaskFields }>;
+    }
+  | {
+      proposalId: UUID;
+      kind: "update_task";
+      taskId: UUID;
+      expectedVersion: number;
+      changes: Changes;
+    };
 ```
 
 Batch items are a nonempty unique subset of the persisted itemIds (max 5); users may edit fields/select items, not append unseen items. Canonicalize to ascending itemId before comparison. A source link can be cleared; a non-null sourceNoteId must equal that item's persisted retrieved source and be currently authorized in the target project. A different source requires a new proposal; no arbitrary model-supplied source links. Revalidate source ownership/project at confirmation, including after waits. If the source timestamp changed, conflict and require a new extraction/review rather than silently treating the old excerpt as current. Clearing a link does not bypass checking the evidence actually used. The user can instead create an independent manual task.
@@ -114,15 +135,24 @@ Receipts are immutable discriminated objects storing **the entire canonical appr
 
 ```ts
 type Receipt =
-  | { schemaVersion: 1; kind: 'create_project';
+  | {
+      schemaVersion: 1;
+      kind: "create_project";
       approved: { name: string; description: string | null };
-      result: { projectId: UUID } }
-  | { schemaVersion: 1; kind: 'create_tasks';
+      result: { projectId: UUID };
+    }
+  | {
+      schemaVersion: 1;
+      kind: "create_tasks";
       approved: { projectId: UUID; items: Array<{ itemId: number; fields: TaskFields }> };
-      results: Array<{ itemId: number; taskId: UUID; projectId: UUID; version: 1 }> }
-  | { schemaVersion: 1; kind: 'update_task';
+      results: Array<{ itemId: number; taskId: UUID; projectId: UUID; version: 1 }>;
+    }
+  | {
+      schemaVersion: 1;
+      kind: "update_task";
       approved: { taskId: UUID; expectedVersion: number; changes: Changes };
-      result: { taskId: UUID; projectId: UUID; version: number; changed: boolean } };
+      result: { taskId: UUID; projectId: UUID; version: number; changed: boolean };
+    };
 ```
 
 Require a 1:1 ordered itemId mapping between approved batch items and unique result task IDs; counts 1–5. Result versions use the existing positive-int range. Future update taskId must equal approved taskId; a no-op returns expectedVersion/changed:false, otherwise expectedVersion+1/changed:true. Never overwrite receipts with current task data. No FK or array of FK-like join rows to tasks; deletion must stay legitimate. Do not store URLs, model text, availability flags or owner IDs in receipts.
@@ -162,6 +192,18 @@ Later implementation should add only schema-only `prepareProject` (Main-only) an
 
 ## 5. Approval and evidence boundaries
 
-PM approval requested for the exact one-table design above; max-five/single-project atomic selection; strict payload/receipt shapes and caps; first-confirmation source-change conflict; unavailable-result replay; and the narrowly expanded second-step grammar. Schema approval is not migration execution approval or authorization to start P5.4B/P5.5.
+PM approved the one-table design, max-five/single-project atomic selection, strict payload/receipt shapes and caps, first-confirmation source-change conflict and unavailable-result replay for P5.4B. This does not authorize migration execution, P5.4C's second-step/tool changes or P5.5 execution.
 
 No live PostgreSQL CHECK/FK/MVCC/lock/rollback or performance evidence, provider grounding, or UI acceptance is claimed. Later focused tests must cover corrupt JSON, ownership/scope denial, mixed proposal rejection, canonical replay/subset conflicts, all-or-none batch failure, source changes, manual-update races, task deletion before/after replay, conversation deletion lock ordering, lost acknowledgements, stream cardinality/limits and revoked result links. Real database/provider/browser checks require separate authorization.
+
+## 6. P5.4B implemented backend
+
+- `packages/db/src/schema/management-proposals.ts`: exact approved table, five CHECKs, source UNIQUE/RESTRICT FK, no result FKs or extra indexes. Generated by installed Kit 1.0.0-rc.5 using `cd packages/db && bun run db:generate --name management_proposals`. SQL has only CREATE TABLE and ALTER TABLE ADD FK; v9 snapshot has 17 create deltas and extends task snapshot `573796db-74aa-43da-83d0-68621e8fa9a8`. Historical migrations are unchanged.
+- `chat/management-contracts.ts`: strict draft/confirmation/receipt unions, shared manual validators, nullable fields, canonical UUIDs/title/name, sequential draft item IDs, sorted unique selections, JSON byte limits and receipt identity mapping. `update_task` contracts exist but both finalization and confirmation reject execution. The trusted future orchestrator, not a model/client, must assign item IDs and resolve retrieval ordinals before calling completion; semantic extraction checks remain P5.4C.
+- Internal `chat.completeManagementProposal`: fresh-session conversation UPDATE lock, user/completed and assistant/pending identity, scope/deadline/source checks, atomic completion/sourceRefs/proposal/activity, exact terminal replay. Note completion/confirmation exclude management sources; management reads/confirmation reject mixed sources. Existing note schema/receipt semantics stay intact.
+- `workspace.confirmManagementProposal`: fresh-session conversation SHARE → proposal UPDATE → owned target project SHARE → selected evidence-note SHARE locks in UUID order. Shared private creation cores preserve manual project/task creation behavior without nested transactions. Task creation may reacquire already-held project/note SHARE locks, never acquire a new lower-order resource. Batch selection, editable fields and evidence are checked before inserts; cleared source links do not skip evidence. Project/task inserts and immutable receipt commit together. Exact replay compares canonical approval without checking mutable source/task contents or rewriting timestamps; no deleted result is recreated.
+- Shared read-only `chat/management-proposals.ts` validates stored state and batches authorized source/project/task projections. History queries only the current bounded message page; begin replay and get-by-ID return separate nullable `managementProposal` data. Public receipts contain current availability/links, not private approval or unavailable result IDs. Unavailable source IDs are also redacted from task draft fields/evidence. Confirmation returns `{proposal, replayed}` only after transaction completion; get-by-ID returns the same proposal view.
+- Authenticated actions are only workspace `confirmManagementProposal` and chat `getManagementProposal`. Successful confirmation revalidates dashboard/projects/tasks plus authorized result paths. No finalization/receipt-write action or model tool is exposed. Main Chat deletion explicitly removes management then note proposals before messages/thread; confirmed knowledge is untouched.
+- Focused tests use real Drizzle SQL over scripted non-network drivers and metadata/snapshot checks. They cover contracts, denials, successful project/full/subset/retrieved batches, evidence changes/clears, rollback requests/lost acknowledgements, exact/conflicting replay, revoked/deleted results, history/begin replay, deletion ordering and reserved updates. Ordered scripted confirmation-before/deletion-before cases and existing simulated note-confirmation locks are **not** live PostgreSQL concurrency/rollback evidence.
+
+Deployment must not enable these readers/writers until the separately approved target has this migration. In particular, history now selects the management table; this backend is not backward-compatible with a database missing it. No live database/provider/browser check, migration application or deployment occurred in P5.4B.

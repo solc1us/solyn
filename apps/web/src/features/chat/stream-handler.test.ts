@@ -150,7 +150,14 @@ function fixture(
   const chat: Chat = {
     beginTurn: async (input) => {
       calls.push({ operation: "begin", input });
-      return ok({ user, assistant, replayed: false, abandoned: false, proposal: null });
+      return ok({
+        user,
+        assistant,
+        replayed: false,
+        abandoned: false,
+        proposal: null,
+        managementProposal: null,
+      });
     },
     getGenerationContext: async (input) => {
       calls.push({ operation: "context", input });
@@ -431,6 +438,7 @@ test("pending, abandoned and terminal replays return persisted records without c
               replayed: true,
               abandoned,
               proposal: null,
+              managementProposal: null,
             }),
         },
       });
@@ -456,7 +464,14 @@ test("concurrent HTTP same-ID replay and different-ID conflict start at most one
           if (active && value.turnId !== active) return denied("CONFLICT");
           const replayed = active !== null;
           active = value.turnId;
-          return ok({ user, assistant, replayed, abandoned: false, proposal: null });
+          return ok({
+            user,
+            assistant,
+            replayed,
+            abandoned: false,
+            proposal: null,
+            managementProposal: null,
+          });
         },
       },
     });
@@ -630,7 +645,14 @@ test("request abort during inference stops; abort during confirmed begin never c
     chat: {
       beginTurn: async () => {
         earlyController.abort();
-        return ok({ user, assistant, replayed: false, abandoned: false, proposal: null });
+        return ok({
+          user,
+          assistant,
+          replayed: false,
+          abandoned: false,
+          proposal: null,
+          managementProposal: null,
+        });
       },
     },
   });
@@ -1572,6 +1594,7 @@ test("retrieval completed-turn replay returns its saved answer without another s
           replayed: !!saved,
           abandoned: false,
           proposal: null,
+          managementProposal: null,
         }),
       completeResponse: async (input) => {
         saved = (input as { content: string }).content;
