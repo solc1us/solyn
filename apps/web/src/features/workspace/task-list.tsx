@@ -200,6 +200,7 @@ export default function TaskList({
             defaultValue={filters.status ?? ""}
           >
             <option value="">All statuses</option>
+            <option value="pending">Incomplete</option>
             {Object.entries(statuses).map(([value, label]) => (
               <option key={value} value={value}>
                 {label}
@@ -248,6 +249,20 @@ export default function TaskList({
             defaultValue={filters.dueDateTo ?? ""}
           />
         </div>
+        {filters.overdueBefore ? (
+          <div className="grid gap-[6px]">
+            <Label htmlFor="filter-overdue">Overdue before</Label>
+            <Input
+              id="filter-overdue"
+              name="overdueBefore"
+              type="date"
+              min="0001-01-01"
+              max="9999-12-31"
+              className="form-control"
+              defaultValue={filters.overdueBefore}
+            />
+          </div>
+        ) : null}
         <div className="flex min-h-[36px] items-center gap-[12px]">
           <Button type="submit" disabled={filtering}>
             {filtering ? "Loading…" : "Apply filters"}

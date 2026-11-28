@@ -33,6 +33,7 @@ import { confirmNoteProposalInput } from "../chat/contracts";
 import type { z } from "zod";
 
 import * as contracts from "./contracts";
+import { calendarDateOffset } from "./presentation";
 import type { ErrorCode, WorkspaceResult } from "./contracts";
 
 class WorkspaceError extends Error {
@@ -296,7 +297,14 @@ export function createWorkspaceService(dependencies: {
         and(
           eq(projects.ownerId, ownerId),
           value.projectId ? eq(tasks.projectId, value.projectId) : undefined,
-          value.status !== undefined ? eq(tasks.status, value.status) : undefined,
+          value.status === "pending"
+            ? ne(tasks.status, "done")
+            : value.status !== undefined
+              ? eq(tasks.status, value.status)
+              : undefined,
+          value.overdueBefore
+            ? and(lt(tasks.dueDate, value.overdueBefore), ne(tasks.status, "done"))
+            : undefined,
           value.priority === undefined
             ? undefined
             : value.priority === null
@@ -312,6 +320,69 @@ export function createWorkspaceService(dependencies: {
   }
 
   return {
+    getTaskSummary(input: unknown) {
+      return run(
+        contracts.taskSummaryInput,
+        input,
+        async ({ today }, ownerId): Promise<contracts.TaskOverview> => {
+          const through = calendarDateOffset(today, 6);
+          const overdue = and(ne(tasks.status, "done"), lt(tasks.dueDate, today));
+          const dueSoon = and(
+            ne(tasks.status, "done"),
+            gte(tasks.dueDate, today),
+            lte(tasks.dueDate, through),
+          );
+          const active = eq(tasks.status, "in_progress");
+          const scope = eq(projects.ownerId, ownerId);
+          const fields = {
+            id: tasks.id,
+            projectId: tasks.projectId,
+            projectName: projects.name,
+            title: tasks.title,
+            status: tasks.status,
+            priority: tasks.priority,
+            dueDate: tasks.dueDate,
+          };
+          // Independent read statements allow honest partial failure. Counts scan the
+          // entire owned set, never a preview page. Each statement has its own snapshot.
+          const [counts, attention, inProgress] = await Promise.all([
+            (async () => {
+              const [row] = await db
+                .select({
+                  overdue: sql<number>`count(*) filter (where ${overdue})`.mapWith(Number),
+                  dueSoon: sql<number>`count(*) filter (where ${dueSoon})`.mapWith(Number),
+                  inProgress: sql<number>`count(*) filter (where ${active})`.mapWith(Number),
+                })
+                .from(tasks)
+                .innerJoin(projects, eq(projects.id, tasks.projectId))
+                .where(scope);
+              return contracts.taskSummaryCounts.parse(row);
+            })().catch(() => null),
+            (async () =>
+              contracts.taskSummaryRows.parse(
+                await db
+                  .select(fields)
+                  .from(tasks)
+                  .innerJoin(projects, eq(projects.id, tasks.projectId))
+                  .where(and(scope, ne(tasks.status, "done"), lte(tasks.dueDate, through)))
+                  .orderBy(tasks.dueDate, tasks.id)
+                  .limit(5),
+              ))().catch(() => null),
+            (async () =>
+              contracts.taskSummaryRows.parse(
+                await db
+                  .select(fields)
+                  .from(tasks)
+                  .innerJoin(projects, eq(projects.id, tasks.projectId))
+                  .where(and(scope, active))
+                  .orderBy(sql`${tasks.dueDate} asc nulls last`, tasks.id)
+                  .limit(5),
+              ))().catch(() => null),
+          ]);
+          return { today, through, counts, attention, inProgress };
+        },
+      );
+    },
     createTask(input: unknown) {
       return run(contracts.createTaskInput, input, (value, ownerId) =>
         db.transaction((tx) => createTaskInTransaction(tx, value, ownerId), {

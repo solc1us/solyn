@@ -47,6 +47,9 @@ export async function getTask(input: unknown) {
 export async function listTasks(input: unknown) {
   return workspace.listTasks(input);
 }
+export async function getTaskSummary(input: unknown) {
+  return workspace.getTaskSummary(input);
+}
 export async function listOwnedTasks(input: unknown = {}) {
   return workspace.listOwnedTasks(input);
 }

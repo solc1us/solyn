@@ -123,8 +123,10 @@ export const deleteTaskInput = z.strictObject({
   taskId: uuid,
   expectedVersion: expectedTaskVersion,
 });
+// Summary links need the same incomplete and date-only cutoff semantics as the overview.
 const taskFilters = {
-  status: taskStatus.optional(),
+  status: z.union([taskStatus, z.literal("pending")]).optional(),
+  overdueBefore: noteDate.unwrap().optional(),
   priority: taskPriority.optional(),
   dueDateFrom: noteDate.unwrap().optional(),
   dueDateTo: noteDate.unwrap().optional(),
@@ -151,6 +153,32 @@ export const searchTasksInput = z
     overdueBefore: noteDate.unwrap().optional(),
   })
   .refine(validTaskRange, "Invalid due-date range");
+export const taskSummaryInput = z.strictObject({ today: noteDate.unwrap() });
+export const taskSummaryCounts = z.strictObject({
+  overdue: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  dueSoon: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  inProgress: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+});
+export const taskSummaryRows = z
+  .array(
+    z.strictObject({
+      id: uuid,
+      projectId: uuid,
+      projectName: name.refine(taskText),
+      title: taskChanges.title,
+      status: taskStatus,
+      priority: taskPriority,
+      dueDate: noteDate,
+    }),
+  )
+  .max(5);
+export type TaskOverview = {
+  today: string;
+  through: string;
+  counts: z.output<typeof taskSummaryCounts> | null;
+  attention: z.output<typeof taskSummaryRows> | null;
+  inProgress: z.output<typeof taskSummaryRows> | null;
+};
 export type CreateTaskInput = z.input<typeof createTaskInput>;
 export type UpdateTaskInput = z.input<typeof updateTaskInput>;
 export type DeleteTaskInput = z.input<typeof deleteTaskInput>;

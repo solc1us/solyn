@@ -98,6 +98,16 @@ export function formatDate(value: Date | string) {
     new Date(typeof value === "string" && value.length === 10 ? `${value}T00:00:00Z` : value),
   );
 }
+// Arithmetic on validated calendar labels, not instants in the user's timezone.
+// UTC setters avoid DST and the Date constructor's special treatment of years 00–99.
+export function calendarDateOffset(value: string, days: number) {
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  const year = date.getUTCFullYear();
+  if (year > 9999) return "9999-12-31";
+  if (year < 1) return "0001-01-01";
+  return date.toISOString().slice(0, 10);
+}
 export function listKey(rows: { id: string; updatedAt: Date }[]) {
   return rows.map((row) => `${row.id}:${new Date(row.updatedAt).toISOString()}`).join(",");
 }

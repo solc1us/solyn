@@ -114,7 +114,15 @@ export function isOverdue(task: Pick<Task, "status" | "dueDate">, today: string 
 export type TaskQuery = Record<string, string | string[] | undefined>;
 export function taskFilters(query: TaskQuery, projectId?: string) {
   const input: Record<string, unknown> = {};
-  for (const key of ["projectId", "status", "priority", "dueDateFrom", "dueDateTo", "offset"]) {
+  for (const key of [
+    "projectId",
+    "status",
+    "priority",
+    "dueDateFrom",
+    "dueDateTo",
+    "overdueBefore",
+    "offset",
+  ]) {
     const value = query[key];
     if (value !== undefined && value !== "")
       input[key] =
@@ -132,7 +140,14 @@ export function taskPageHref(
   offset: number,
 ) {
   const url = new URL(base, "https://solyn.invalid");
-  for (const key of ["projectId", "status", "priority", "dueDateFrom", "dueDateTo"] as const) {
+  for (const key of [
+    "projectId",
+    "status",
+    "priority",
+    "dueDateFrom",
+    "dueDateTo",
+    "overdueBefore",
+  ] as const) {
     if (base.startsWith("/projects/") && key === "projectId") continue;
     const value = filters[key];
     if (value !== undefined) url.searchParams.set(key, value === null ? "none" : value);
