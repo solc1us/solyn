@@ -636,7 +636,7 @@ test("task Server Actions remain thin, revalidate successful confirmed mutation 
     assert.match(
       source,
       new RegExp(
-        `export async function ${operation}\\(input: unknown\\) \\{\\s*const result = await workspace\\.${operation}\\(input\\);\\s*if \\(result\\.ok\\) refreshProjectViews\\(result\\.data\\.projectId\\);\\s*return result;`,
+        `export async function ${operation}\\(input: unknown\\) \\{\\s*const result = await workspace\\.${operation}\\(input\\);\\s*if \\(result\\.ok\\) refreshProjectViews\\(result\\.data\\.projectId, result\\.data\\.id\\);\\s*return result;`,
       ),
     );
   for (const operation of ["getTask", "listTasks", "listOwnedTasks"])

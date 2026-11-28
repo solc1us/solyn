@@ -4,10 +4,14 @@ import { revalidatePath } from "next/cache";
 
 import { workspace } from "./server";
 
-function refreshProjectViews(projectId: string) {
+function refreshProjectViews(projectId: string, taskId?: string) {
   revalidatePath("/dashboard");
   revalidatePath("/projects");
   revalidatePath(`/projects/${projectId}`);
+  if (taskId) {
+    revalidatePath("/tasks");
+    revalidatePath(`/tasks/${taskId}`);
+  }
 }
 
 // Thin transport adapters. Server Components and future server-side tools can
@@ -34,7 +38,7 @@ export async function updateProject(input: unknown) {
 }
 export async function createTask(input: unknown) {
   const result = await workspace.createTask(input);
-  if (result.ok) refreshProjectViews(result.data.projectId);
+  if (result.ok) refreshProjectViews(result.data.projectId, result.data.id);
   return result;
 }
 export async function getTask(input: unknown) {
@@ -48,12 +52,12 @@ export async function listOwnedTasks(input: unknown = {}) {
 }
 export async function updateTask(input: unknown) {
   const result = await workspace.updateTask(input);
-  if (result.ok) refreshProjectViews(result.data.projectId);
+  if (result.ok) refreshProjectViews(result.data.projectId, result.data.id);
   return result;
 }
 export async function deleteTask(input: unknown) {
   const result = await workspace.deleteTask(input);
-  if (result.ok) refreshProjectViews(result.data.projectId);
+  if (result.ok) refreshProjectViews(result.data.projectId, result.data.id);
   return result;
 }
 export async function listNotes(input: unknown) {

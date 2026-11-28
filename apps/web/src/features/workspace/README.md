@@ -89,6 +89,20 @@ Updates/deletions lock the owned task under READ COMMITTED and check `expectedVe
 
 `tasks.test.ts` and `packages/db/src/tasks-schema.test.ts` use the existing offline SQL/metadata pattern. They do not prove real PostgreSQL constraints, locks, rollback or persisted account isolation. The additive generated SQL and execution prerequisites are documented in `packages/db/src/migrations/README.md`; migration execution is separately gated.
 
+## P5.3 manual task management
+
+- `/tasks` lists the session owner's tasks; Tasks sits between Projects and Ask Solyn. `/tasks/new` requires selecting an owned project; `/tasks/new?projectId=<uuid>` authorizes and fixes that project. `/tasks/[taskId]` is the only task editor route.
+- Project Detail defaults to Notes; `?view=tasks` uses the same task-list component with fixed-project `listTasks`. Existing project metadata, Note Search/collection pagination and Project Chat remain. Only the selected tab's collection is queried.
+- Status, priority (including No priority), project and inclusive due-date filters use the P5.2 backend. GET-compatible forms and Previous/Next links retain filters in the URL, resetting offset on filter application. Pages contain at most 50 tasks, grouped by status within that page; loaded/page counts never claim a dataset total.
+- Global project choices and project source-note choices load bounded pages with retry and raw-page offsets. Changing a creation project clears its source. An existing outside-page source is retained on unrelated edits; source links use authorized note metadata, not a supplied ID alone. Choices beyond the first page remain reachable within existing backend pagination bounds.
+- The task form reuses the approved full-width header/fields, native submit, explicit save and unsaved guard. Update payloads contain only changed fields and the last confirmed version; nullable clears are explicit nulls. Descriptions/PIC preserve exact whitespace. Completion is server-managed, never client timestamp input.
+- List Done/Reopen controls wait for confirmation and refresh the current filtered view. Conflicts and ambiguous outcomes direct users to the canonical editor for review rather than silently retrying. The editor loads latest state for comparison only; explicit replacement adopts its version. Uncertain creates require checking persisted tasks and explicit acknowledgement before retry. These are recovery controls, not new idempotency guarantees.
+- Permanent delete identifies the saved task and unsaved-loss risk, requires confirmation/version, and navigates to project tasks only after success. Pending/deleted state prevents duplicate mutations. Failure preserves the draft; uncertain deletion never pretends the task is gone.
+- Due dates use existing date-only formatting. Overdue is derived after hydration from the user's local calendar, refreshed at local midnight and on focus/visibility changes; today, undated and Done tasks are excluded. No persisted status, reminders or timezone-based backend mutations are added.
+- Successful task actions additionally revalidate `/tasks` and the canonical task route, while retaining existing dashboard/project revalidation. No schema, migration, permission, AI or dependency changes are part of P5.3.
+
+`task-frontend.test.tsx` covers the real view-local editor controller with offline action fixtures, payload/filter/date helpers, route/layout wiring and shared breadcrumb rendering. Source-level assertions are not mounted DOM interactions. Actual localhost visual/functional, keyboard, responsive and authenticated database acceptance remain PM-owned; no standalone browser harness or live data writes are used here.
+
 ## Note revision transaction
 
 `updateNote` starts a READ COMMITTED transaction and locks the ownership-scoped note using `FOR UPDATE OF notes`. Only then, in a separate statement, it reads the largest stored snapshot version. This avoids allocating a version using an old statement snapshot after waiting for another writer's lock. The outgoing version is `max(snapshot.version) + 1`, or 1 without history.

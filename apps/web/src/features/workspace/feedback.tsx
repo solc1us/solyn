@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { Route } from "next";
 
 import type { ErrorCode } from "./contracts";
 import { errorMessage } from "./presentation";
@@ -33,9 +34,11 @@ export function FieldError({ id, message }: { id: string; message?: string }) {
 export function Breadcrumbs({
   project,
   current,
+  root = { href: "/projects", label: "Projects" },
 }: {
   project?: { id: string; name: string };
   current?: string;
+  root?: { href: Route; label: string };
 }) {
   return (
     <nav
@@ -44,8 +47,8 @@ export function Breadcrumbs({
     >
       <ol className="flex list-none flex-wrap gap-[10px] p-0">
         <li className="flex min-w-0 items-baseline gap-[10px] [overflow-wrap:anywhere]">
-          <Link href="/projects" className="[&:hover]:text-[#eff4ff] [&:hover]:underline">
-            Projects
+          <Link href={root.href} className="[&:hover]:text-[#eff4ff] [&:hover]:underline">
+            {root.label}
           </Link>
         </li>
         {project ? (

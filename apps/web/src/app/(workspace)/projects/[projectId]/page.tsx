@@ -2,6 +2,9 @@ import { buttonVariants } from "@solyn/ui/components/button";
 import { cn } from "@solyn/ui/lib/utils";
 import { Plus, Pencil } from "lucide-react";
 import Link from "next/link";
+import { notFound } from "next/navigation";
+import TaskList from "@/features/workspace/task-list";
+import { taskFilters, type TaskQuery } from "@/features/workspace/task-state";
 
 import ProjectChatPopup from "@/features/chat/project-chat-popup";
 import { searchNotes } from "@/features/workspace/actions";
@@ -13,15 +16,27 @@ import RetryPanel from "@/features/workspace/retry-panel";
 import { routeData } from "@/features/workspace/route-data";
 import { workspace } from "@/features/workspace/server";
 
-export default async function ProjectPage({ params }: { params: Promise<{ projectId: string }> }) {
+export default async function ProjectPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ projectId: string }>;
+  searchParams: Promise<TaskQuery>;
+}) {
   const { projectId } = await params;
-  const [projectResult, notesResult] = await Promise.all([
+  const query = await searchParams;
+  const showTasks = query.view === "tasks";
+  const filters = taskFilters(query, projectId);
+  if (showTasks && !filters.success) notFound();
+  const [projectResult, notesResult, tasksResult] = await Promise.all([
     workspace.getProject({ projectId }),
-    workspace.listNotes({ projectId, limit: 50, offset: 0 }),
+    showTasks ? null : workspace.listNotes({ projectId, limit: 50, offset: 0 }),
+    showTasks && filters.success ? workspace.listTasks(filters.data) : null,
   ]);
   const project = routeData(projectResult);
-  const notes = routeData(notesResult);
-  if (!project || !notes) return <RetryPanel />;
+  const notes = notesResult ? routeData(notesResult) : [];
+  const tasks = tasksResult ? routeData(tasksResult) : null;
+  if (!project || !notes || (showTasks && !tasks)) return <RetryPanel />;
   return (
     <div className="page-content px-[24px] pt-[20px] pb-[40px] [@media(max-width:760px)]:[padding:20px_max(16px,env(safe-area-inset-right))_max(40px,env(safe-area-inset-bottom))_max(16px,env(safe-area-inset-left))]">
       <Breadcrumbs current={project.name} />
@@ -44,11 +59,13 @@ export default async function ProjectPage({ params }: { params: Promise<{ projec
             Edit project
           </Link>
           <Link
-            href={`/projects/${project.id}/notes/new`}
+            href={
+              showTasks ? `/tasks/new?projectId=${project.id}` : `/projects/${project.id}/notes/new`
+            }
             className={cn(buttonVariants(), "bg-clip-border select-auto")}
           >
             <Plus size={17} className="size-[17px]" aria-hidden="true" />
-            New note
+            {showTasks ? "New task" : "New note"}
           </Link>
         </div>
       </header>
@@ -57,16 +74,38 @@ export default async function ProjectPage({ params }: { params: Promise<{ projec
           Created {formatDate(project.createdAt)}
         </p>
       </div>
-      <div className="section-heading mt-[24px] mb-[12px] flex flex-wrap items-baseline justify-between gap-[12px]">
-        <h2 className="text-[14px]">Notes</h2>
-      </div>
-      <NoteSearch
-        key={`${project.id}:${listKey(notes)}`}
-        projectId={project.id}
-        searchAction={searchNotes}
-      >
-        <Collection key={listKey(notes)} projectId={project.id} initial={notes.map(noteRow)} />
-      </NoteSearch>
+      <nav aria-label="Project views" className="mt-[24px] mb-[16px] flex gap-[20px] text-[14px]">
+        <Link
+          href={`/projects/${project.id}`}
+          aria-current={!showTasks ? "page" : undefined}
+          className="pb-[6px] text-muted-foreground aria-[current=page]:border-b aria-[current=page]:border-solid aria-[current=page]:border-ring aria-[current=page]:text-foreground"
+        >
+          Notes
+        </Link>
+        <Link
+          href={`/projects/${project.id}?view=tasks`}
+          aria-current={showTasks ? "page" : undefined}
+          className="pb-[6px] text-muted-foreground aria-[current=page]:border-b aria-[current=page]:border-solid aria-[current=page]:border-ring aria-[current=page]:text-foreground"
+        >
+          Tasks
+        </Link>
+      </nav>
+      {showTasks && tasks && filters.success ? (
+        <TaskList
+          key={`${project.id}:${JSON.stringify(filters.data)}`}
+          rows={tasks}
+          filters={filters.data}
+          project={{ id: project.id, name: project.name }}
+        />
+      ) : (
+        <NoteSearch
+          key={`${project.id}:${listKey(notes)}`}
+          projectId={project.id}
+          searchAction={searchNotes}
+        >
+          <Collection key={listKey(notes)} projectId={project.id} initial={notes.map(noteRow)} />
+        </NoteSearch>
+      )}
     </div>
   );
 }

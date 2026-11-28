@@ -1,7 +1,7 @@
 "use client";
 
 import { Button } from "@solyn/ui/components/button";
-import { FolderClosed, House, Menu, MessageSquare, X } from "lucide-react";
+import { FolderClosed, House, ListTodo, Menu, MessageSquare, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { startTransition, useEffect, useRef, useState } from "react";
@@ -110,6 +110,14 @@ export default function WorkspaceShell({
           >
             <FolderClosed size={17} aria-hidden="true" />
             Projects
+          </Link>
+          <Link
+            className="nav-item flex min-h-[36px] items-center gap-[12px] rounded-[7px] px-[12px] py-[7px] text-[14px] text-muted-foreground aria-[current=page]:bg-(--selected) aria-[current=page]:text-foreground aria-[current=page]:shadow-[inset_2px_0_var(--brand)] [&:hover:not([aria-current=page])]:bg-(--hover) [&:hover:not([aria-current=page])]:text-foreground [@media(max-width:760px)]:min-h-[44px] [@media(pointer:coarse)]:min-h-[44px]"
+            href="/tasks"
+            aria-current={pathname.startsWith("/tasks") ? "page" : undefined}
+          >
+            <ListTodo size={17} aria-hidden="true" />
+            Tasks
           </Link>
           <Link
             className="nav-item flex min-h-[36px] items-center gap-[12px] rounded-[7px] px-[12px] py-[7px] text-[14px] text-muted-foreground aria-[current=page]:bg-(--selected) aria-[current=page]:text-foreground aria-[current=page]:shadow-[inset_2px_0_var(--brand)] [&:hover:not([aria-current=page])]:bg-(--hover) [&:hover:not([aria-current=page])]:text-foreground [@media(max-width:760px)]:min-h-[44px] [@media(pointer:coarse)]:min-h-[44px]"
