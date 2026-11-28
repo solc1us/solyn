@@ -14,7 +14,21 @@ import {
   readManagementProposals,
   managementReferencesMatch,
 } from "../chat/management-proposals";
-import { and, desc, eq, exists, gte, isNull, lte, max, notExists, or, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  exists,
+  gte,
+  isNull,
+  lt,
+  lte,
+  ne,
+  max,
+  notExists,
+  or,
+  sql,
+} from "drizzle-orm";
 import { confirmNoteProposalInput } from "../chat/contracts";
 import type { z } from "zod";
 
@@ -232,6 +246,42 @@ export function createWorkspaceService(dependencies: {
     if (!task) throw new Error("Insert returned no task");
     return task;
   }
+  async function updateTaskInTransaction(
+    tx: Transaction,
+    value: z.output<typeof contracts.updateTaskInput>,
+    ownerId: string,
+    locked?: Awaited<ReturnType<typeof lockTask>>,
+  ) {
+    const task = locked ?? (await lockTask(tx, value.taskId, ownerId));
+    if (task.id !== value.taskId || task.version !== value.expectedVersion) throw taskConflict();
+    const next = {
+      title: value.title ?? task.title,
+      description: value.description === undefined ? task.description : value.description,
+      status: value.status ?? task.status,
+      priority: value.priority === undefined ? task.priority : value.priority,
+      assignee: value.assignee === undefined ? task.assignee : value.assignee,
+      dueDate: value.dueDate === undefined ? task.dueDate : value.dueDate,
+      sourceNoteId: value.sourceNoteId === undefined ? task.sourceNoteId : value.sourceNoteId,
+    };
+    if (Object.entries(next).every(([key, field]) => task[key as keyof typeof next] === field))
+      return task;
+    if (task.version >= 2_147_483_647) throw taskConflict();
+    if (next.sourceNoteId !== task.sourceNoteId)
+      await validateTaskSource(tx, task.projectId, ownerId, next.sourceNoteId);
+    const now = new Date();
+    const [updated] = await tx
+      .update(tasks)
+      .set({
+        ...next,
+        version: task.version + 1,
+        updatedAt: now,
+        completedAt: next.status === "done" ? (task.completedAt ?? now) : null,
+      })
+      .where(and(ownedTask(task.id, ownerId), eq(tasks.version, value.expectedVersion)))
+      .returning(taskFields);
+    if (!updated) throw taskConflict();
+    return updated;
+  }
   async function readTaskList(
     value: z.output<typeof contracts.listOwnedTasksInput>,
     ownerId: string,
@@ -293,46 +343,86 @@ export function createWorkspaceService(dependencies: {
       // Optional foreign/missing project filters return the same empty collection.
       return run(contracts.listOwnedTasksInput, input, readTaskList);
     },
-    updateTask(input: unknown) {
-      return run(contracts.updateTaskInput, input, (value, ownerId) =>
+    searchTasks(input: unknown = {}) {
+      return run(contracts.searchTasksInput, input, (value, ownerId) =>
         db.transaction(
           async (tx) => {
-            const task = await lockTask(tx, value.taskId, ownerId);
-            // Validate version before no-op detection; stale identical writes still conflict.
-            if (task.version !== value.expectedVersion) throw taskConflict();
-            const next = {
-              title: value.title ?? task.title,
-              description: value.description === undefined ? task.description : value.description,
-              status: value.status ?? task.status,
-              priority: value.priority === undefined ? task.priority : value.priority,
-              assignee: value.assignee === undefined ? task.assignee : value.assignee,
-              dueDate: value.dueDate === undefined ? task.dueDate : value.dueDate,
-              sourceNoteId:
-                value.sourceNoteId === undefined ? task.sourceNoteId : value.sourceNoteId,
-            };
-            if (
-              Object.entries(next).every(([key, field]) => task[key as keyof typeof next] === field)
-            )
-              return task;
-            if (task.version >= 2_147_483_647) throw taskConflict();
-            if (next.sourceNoteId !== task.sourceNoteId)
-              await validateTaskSource(tx, task.projectId, ownerId, next.sourceNoteId);
-            const now = new Date();
-            const [updated] = await tx
-              .update(tasks)
-              .set({
-                ...next,
-                version: task.version + 1,
-                updatedAt: now,
-                completedAt: next.status === "done" ? (task.completedAt ?? now) : null,
+            // Names are filters, never identity/authorization. Detect ambiguous project
+            // filters even when only one matching task happens to exist.
+            const literal = (v: string) => `%${v.replace(/[!%_]/g, "!$&")}%`;
+            const nameFilter = value.projectName
+              ? sql`${projects.name} ilike ${literal(value.projectName)} escape '!'`
+              : undefined;
+            const candidates = nameFilter
+              ? await tx
+                  .select({ id: projects.id })
+                  .from(projects)
+                  .where(
+                    and(
+                      eq(projects.ownerId, ownerId),
+                      nameFilter,
+                      value.projectId ? eq(projects.id, value.projectId) : undefined,
+                    ),
+                  )
+                  .limit(2)
+              : [];
+            const rows = await tx
+              .select({
+                id: tasks.id,
+                projectId: tasks.projectId,
+                projectName: projects.name,
+                title: tasks.title,
+                description: sql<string | null>`left(${tasks.description}, 160)`,
+                status: tasks.status,
+                priority: tasks.priority,
+                assignee: tasks.assignee,
+                dueDate: tasks.dueDate,
+                version: tasks.version,
               })
-              .where(and(ownedTask(task.id, ownerId), eq(tasks.version, value.expectedVersion)))
-              .returning(taskFields);
-            if (!updated) throw taskConflict();
-            return updated;
+              .from(tasks)
+              .innerJoin(projects, eq(projects.id, tasks.projectId))
+              .where(
+                and(
+                  eq(projects.ownerId, ownerId),
+                  value.projectId ? eq(tasks.projectId, value.projectId) : undefined,
+                  nameFilter,
+                  value.title
+                    ? sql`${tasks.title} ilike ${literal(value.title)} escape '!'`
+                    : undefined,
+                  value.status === "pending"
+                    ? ne(tasks.status, "done")
+                    : value.status
+                      ? eq(tasks.status, value.status)
+                      : undefined,
+                  value.priority === undefined
+                    ? undefined
+                    : value.priority === null
+                      ? isNull(tasks.priority)
+                      : eq(tasks.priority, value.priority),
+                  value.dueDateFrom ? gte(tasks.dueDate, value.dueDateFrom) : undefined,
+                  value.dueDateTo ? lte(tasks.dueDate, value.dueDateTo) : undefined,
+                  value.overdueBefore
+                    ? and(lt(tasks.dueDate, value.overdueBefore), ne(tasks.status, "done"))
+                    : undefined,
+                ),
+              )
+              .orderBy(desc(tasks.updatedAt), desc(tasks.id))
+              .limit(11);
+            return {
+              items: rows.slice(0, 10),
+              truncated: rows.length > 10,
+              ambiguousProject: candidates.length > 1,
+            };
           },
-          { isolationLevel: "read committed" },
+          { isolationLevel: "repeatable read", accessMode: "read only" },
         ),
+      );
+    },
+    updateTask(input: unknown) {
+      return run(contracts.updateTaskInput, input, (value, ownerId) =>
+        db.transaction((tx) => updateTaskInTransaction(tx, value, ownerId), {
+          isolationLevel: "read committed",
+        }),
       );
     },
     deleteTask(input: unknown) {
@@ -361,9 +451,6 @@ export function createWorkspaceService(dependencies: {
                 "CONFLICT",
                 "This proposal has changed. Reload it before retrying.",
               );
-            // Reserved contracts are parsed, but execution is deliberately disabled.
-            if (value.kind === "update_task")
-              throw new WorkspaceError("INVALID_INPUT", "Task update proposals are not enabled.");
             const sourceCondition = and(
               ownedConversation(ownerId),
               eq(chatMessages.role, "assistant"),
@@ -417,6 +504,13 @@ export function createWorkspaceService(dependencies: {
             if (!managementReferencesMatch(draft, row.sourceRefs))
               throw new Error("Invalid stored provenance");
             if (draft.kind !== value.kind) throw changed();
+            if (
+              draft.kind === "update_task" &&
+              (value.kind !== "update_task" ||
+                value.taskId !== draft.taskId ||
+                value.expectedVersion !== draft.expectedVersion)
+            )
+              throw changed();
             const approved = approvedManagementPayload(value);
             const replayed = receipt !== null;
             if (receipt) {
@@ -434,6 +528,38 @@ export function createWorkspaceService(dependencies: {
                   kind: value.kind,
                   approved,
                   result: { projectId: project.id },
+                };
+              } else if (value.kind === "update_task") {
+                if (
+                  draft.kind !== "update_task" ||
+                  value.taskId !== draft.taskId ||
+                  value.expectedVersion !== draft.expectedVersion ||
+                  (conversation.projectId !== null && draft.projectId !== conversation.projectId)
+                )
+                  throw changed();
+                await lockOwnedProject(tx, draft.projectId, ownerId);
+                const task = await lockTask(tx, draft.taskId, ownerId);
+                if (task.projectId !== draft.projectId) throw missing();
+                const updated = await updateTaskInTransaction(
+                  tx,
+                  {
+                    taskId: draft.taskId,
+                    expectedVersion: draft.expectedVersion,
+                    ...value.changes,
+                  },
+                  ownerId,
+                  task,
+                );
+                nextReceipt = {
+                  schemaVersion: 1,
+                  kind: value.kind,
+                  approved,
+                  result: {
+                    taskId: updated.id,
+                    projectId: updated.projectId,
+                    version: updated.version,
+                    changed: updated.version !== task.version,
+                  },
                 };
               } else {
                 if (draft.kind !== "create_tasks") throw changed();

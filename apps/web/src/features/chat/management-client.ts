@@ -3,6 +3,7 @@ import {
   type ManagementConfirmation,
   type ManagementProposalView,
   type managementTaskFields,
+  type managementChanges,
 } from "./management-contracts";
 import type { z } from "zod";
 import type { Issue } from "./transport";
@@ -15,7 +16,8 @@ export type ManagementItemEdit = {
 };
 export type ManagementEdit =
   | { kind: "create_project"; name: string; description: string }
-  | { kind: "create_tasks"; projectId: string; items: ManagementItemEdit[] };
+  | { kind: "create_tasks"; projectId: string; items: ManagementItemEdit[] }
+  | { kind: "update_task"; changes: z.output<typeof managementChanges>; invalidDate?: boolean };
 export type ManagementSave = {
   phase: "saving" | "checking" | "uncertain" | "retry" | "error";
   proposal: ManagementProposalView;
@@ -24,6 +26,7 @@ export type ManagementSave = {
 };
 export function originalManagementEdit(proposal: ManagementProposalView): ManagementEdit {
   const draft = proposal.draft;
+  if (draft.kind === "update_task") return { kind: draft.kind, changes: { ...draft.changes } };
   return draft.kind === "create_project"
     ? { kind: draft.kind, name: draft.name, description: draft.description ?? "" }
     : {
@@ -39,7 +42,24 @@ export function originalManagementEdit(proposal: ManagementProposalView): Manage
 export function managementEditDirty(proposal: ManagementProposalView, edit?: ManagementEdit) {
   return !!edit && JSON.stringify(edit) !== JSON.stringify(originalManagementEdit(proposal));
 }
-export function managementInput(proposalId: string, edit: ManagementEdit) {
+export function managementInput(
+  proposalId: string,
+  edit: ManagementEdit,
+  proposal?: ManagementProposalView,
+) {
+  if (edit.kind === "update_task") {
+    const draft = proposal?.draft;
+    return {
+      proposalId,
+      kind: edit.kind,
+      changes: edit.changes,
+      taskId:
+        draft?.kind === "update_task" && draft.target.state === "available"
+          ? draft.target.taskId
+          : undefined,
+      expectedVersion: draft?.kind === "update_task" ? draft.expectedVersion : undefined,
+    };
+  }
   return edit.kind === "create_project"
     ? { proposalId, kind: edit.kind, name: edit.name, description: edit.description || null }
     : {
@@ -54,6 +74,13 @@ export function managementInput(proposalId: string, edit: ManagementEdit) {
 export function managementCompatible(proposal: ManagementProposalView, edit: ManagementEdit) {
   if (proposal.kind !== edit.kind || proposal.status !== "proposed") return false;
   if (edit.kind === "create_project") return proposal.scopedProject === null;
+  if (edit.kind === "update_task")
+    return (
+      proposal.draft.kind === "update_task" &&
+      !edit.invalidDate &&
+      proposal.draft.target.state === "available" &&
+      proposal.draft.expectedVersion === proposal.draft.target.currentVersion
+    );
   if (
     proposal.draft.kind !== "create_tasks" ||
     (proposal.scopedProject && edit.projectId !== proposal.scopedProject.id)
@@ -83,7 +110,9 @@ export function managementPayload(
   edit: ManagementEdit,
 ): ManagementConfirmation | null {
   if (!managementCompatible(proposal, edit)) return null;
-  const parsed = confirmManagementProposalInput.safeParse(managementInput(proposal.id, edit));
+  const parsed = confirmManagementProposalInput.safeParse(
+    managementInput(proposal.id, edit, proposal),
+  );
   return parsed.success ? parsed.data : null;
 }
 export function compatibleManagementReceipt(a: ManagementProposalView, b: ManagementProposalView) {
@@ -104,6 +133,14 @@ export function compatibleManagementReceipt(a: ManagementProposalView, b: Manage
       x.result.state !== "available" ||
       y.result.state !== "available" ||
       x.result.projectId === y.result.projectId
+    );
+  if (x.kind === "update_task" && y.kind === "update_task")
+    return (
+      x.version === y.version &&
+      x.changed === y.changed &&
+      (x.result.state !== "available" ||
+        y.result.state !== "available" ||
+        (x.result.taskId === y.result.taskId && x.result.projectId === y.result.projectId))
     );
   if (
     x.kind !== "create_tasks" ||
@@ -144,7 +181,9 @@ export function revokeManagement(proposal: ManagementProposalView): ManagementPr
                 : item,
             ),
           }
-        : proposal.draft,
+        : proposal.draft.kind === "update_task"
+          ? { ...proposal.draft, target: { state: "unavailable" } }
+          : proposal.draft,
     receipt:
       proposal.receipt?.kind === "create_project"
         ? { kind: "create_project", result: { state: "unavailable" } }
@@ -156,6 +195,8 @@ export function revokeManagement(proposal: ManagementProposalView): ManagementPr
                 state: "unavailable",
               })),
             }
-          : null,
+          : proposal.receipt?.kind === "update_task"
+            ? { ...proposal.receipt, result: { state: "unavailable" } }
+            : null,
   };
 }

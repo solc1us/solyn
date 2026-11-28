@@ -15,6 +15,7 @@ import {
   type ManagementEdit,
   type ManagementSave,
 } from "./management-client";
+import { managementUpdateFields } from "./management-contracts";
 import { fieldErrors } from "../workspace/presentation";
 import { FieldError } from "../workspace/feedback";
 import { issueMessages, safeIssue, type Issue } from "./transport";
@@ -127,6 +128,17 @@ function ProjectChoices({
     </div>
   );
 }
+type ManagementPreviewProps = {
+  proposal: ManagementProposalView;
+  edit?: ManagementEdit;
+  saveState?: ManagementSave;
+  change: (edit: ManagementEdit) => void;
+  save: () => void;
+  recover: () => void;
+  loadProjects: typeof listProposalProjects;
+  sources?: SourceView[];
+  blocked?: boolean;
+};
 export function ManagementPreview({
   proposal,
   edit,
@@ -137,19 +149,24 @@ export function ManagementPreview({
   loadProjects,
   sources = [],
   blocked = false,
-}: {
-  proposal: ManagementProposalView;
-  edit?: ManagementEdit;
-  saveState?: ManagementSave;
-  change: (edit: ManagementEdit) => void;
-  save: () => void;
-  recover: () => void;
-  loadProjects: typeof listProposalProjects;
-  sources?: SourceView[];
-  blocked?: boolean;
-}) {
+}: ManagementPreviewProps) {
+  if (proposal.draft.kind === "update_task")
+    return (
+      <UpdatePreview
+        proposal={proposal}
+        edit={edit}
+        saveState={saveState}
+        change={change}
+        save={save}
+        recover={recover}
+        loadProjects={loadProjects}
+        blocked={blocked}
+      />
+    );
   const locked = !!saveState && saveState.phase !== "error";
-  let value = edit ?? originalManagementEdit(proposal);
+  const original = edit ?? originalManagementEdit(proposal);
+  if (original.kind === "update_task") return null;
+  let value = original;
   if (locked && saveState) {
     const payload = saveState.payload;
     if (payload.kind === "create_project")
@@ -551,6 +568,265 @@ export function ManagementPreview({
             Check creation status
           </Button>
         ) : null}
+      </div>
+    </form>
+  );
+}
+
+function UpdatePreview({
+  proposal,
+  edit,
+  saveState,
+  change,
+  save,
+  recover,
+  blocked,
+}: ManagementPreviewProps) {
+  const draft = proposal.draft;
+  if (draft.kind !== "update_task") return null;
+  const target = draft.target;
+  if (proposal.status === "confirmed") {
+    const receipt = proposal.receipt;
+    if (receipt?.kind !== "update_task") return null;
+    return (
+      <section
+        className="mt-[16px] grid gap-[8px] rounded-[7px] border border-border p-[16px]"
+        aria-label="Confirmed task update"
+      >
+        <p>
+          {receipt.changed ? "Task update confirmed." : "No changes needed. Confirmation recorded."}{" "}
+          Recorded version: {receipt.version}.
+        </p>
+        {receipt.result.state === "available" ? (
+          <Link prefetch={false} href={`/tasks/${receipt.result.taskId}`} className="underline">
+            Open task
+          </Link>
+        ) : (
+          <p>Task unavailable or awaiting authorization refresh.</p>
+        )}
+        <p className="text-[12px] text-muted-foreground">
+          The original proposal is not the final approved values. Open the available task for its
+          current contents.
+        </p>
+        <Button type="button" variant="secondary" className="justify-self-start" onClick={recover}>
+          Refresh availability
+        </Button>
+      </section>
+    );
+  }
+  const locked = !!saveState && saveState.phase !== "error";
+  let value =
+    edit?.kind === "update_task" ? edit : { kind: "update_task" as const, changes: draft.changes };
+  if (locked && saveState?.payload.kind === "update_task")
+    value = { kind: "update_task", changes: saveState.payload.changes };
+  const stale = target.state === "available" && target.currentVersion !== draft.expectedVersion;
+  const valid = managementPayload(proposal, value);
+  const disabled = blocked || locked || stale || target.state !== "available";
+  const keys = ["title", "description", "status", "priority", "assignee", "dueDate"] as const;
+  const labels = {
+    title: "Title",
+    description: "Description",
+    status: "Status",
+    priority: "Priority",
+    assignee: "PIC",
+    dueDate: "Due date",
+  };
+  const patch = (key: (typeof keys)[number], next: unknown, invalidDate?: boolean) =>
+    change({
+      kind: "update_task",
+      changes: { ...value.changes, [key]: next },
+      invalidDate: key === "dueDate" ? invalidDate : value.invalidDate,
+    });
+  return (
+    <form
+      className="proposal-preview mt-[16px] grid min-w-0 gap-[12px] rounded-[7px] border border-border bg-canvas p-[16px]"
+      aria-label="Task update preview"
+      data-unsaved={managementEditDirty(proposal, edit) || locked ? "true" : "false"}
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!blocked && !stale && (valid || saveState?.phase === "retry")) save();
+      }}
+    >
+      <h3 className="text-[15px] font-medium">Task update draft — not applied</h3>
+      {target.state === "available" ? (
+        <div className="grid gap-[4px]">
+          <p>
+            {target.projectName} · {target.fields.title}
+          </p>
+          <Link prefetch={false} href={`/tasks/${target.taskId}`} className="underline">
+            Open current task
+          </Link>
+          <p className="text-[12px] text-muted-foreground">
+            Fixed target; expected version {draft.expectedVersion}. Current values are read-time
+            values, not historical snapshots.
+          </p>
+        </div>
+      ) : (
+        <p role="alert">
+          Target unavailable or awaiting authorization refresh. Reload saved history or check update
+          status.
+        </p>
+      )}
+      {stale ? (
+        <p role="alert">
+          This task has changed. Request a new reviewed proposal; its expected version cannot be
+          refreshed in this preview.
+        </p>
+      ) : null}
+      <p className="text-[12px] text-muted-foreground">
+        Only checked fields change. Unchecked fields and the source-note association stay unchanged.
+        Empty optional fields clear their values.
+      </p>
+      <fieldset disabled={disabled} className="grid min-w-0 gap-[12px]">
+        {keys.map((key) => {
+          const enabled = Object.hasOwn(value.changes, key);
+          const current = target.state === "available" ? target.fields[key] : undefined;
+          const proposed = value.changes[key];
+          const id = `update-${proposal.id}-${key}`;
+          const parsed = enabled ? managementUpdateFields.shape[key].safeParse(proposed) : null;
+          const error =
+            enabled && parsed && !parsed.success
+              ? "Check this field."
+              : key === "dueDate" && value.invalidDate
+                ? "Enter a valid calendar date."
+                : undefined;
+          return (
+            <div key={key} className="grid min-w-0 gap-[6px]">
+              <label className="flex items-center gap-[8px]">
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  onChange={(e) => {
+                    if (e.target.checked)
+                      patch(
+                        key,
+                        current ?? (key === "title" ? "" : key === "status" ? "todo" : null),
+                      );
+                    else {
+                      const changes = { ...value.changes };
+                      delete changes[key];
+                      change({
+                        kind: "update_task",
+                        changes,
+                        invalidDate: key === "dueDate" ? undefined : value.invalidDate,
+                      });
+                    }
+                  }}
+                />
+                Change {labels[key]}
+              </label>
+              <p className="max-h-[100px] overflow-y-auto whitespace-pre-wrap break-words text-[12px] text-muted-foreground">
+                Current:{" "}
+                {current === undefined
+                  ? "Unavailable"
+                  : current === null || current === ""
+                    ? "Not set"
+                    : current}
+              </p>
+              {enabled ? (
+                <>
+                  <Label htmlFor={id}>Proposed {labels[key].toLowerCase()}</Label>
+                  {key === "description" ? (
+                    <Textarea
+                      id={id}
+                      className="form-control h-[120px] max-h-[35dvh] field-sizing-fixed resize-none overflow-y-auto"
+                      maxLength={5000}
+                      value={(proposed as string) ?? ""}
+                      onChange={(e) => patch(key, e.target.value || null)}
+                    />
+                  ) : key === "status" || key === "priority" ? (
+                    <select
+                      id={id}
+                      className={selectClass}
+                      value={(proposed as string) ?? ""}
+                      onChange={(e) => patch(key, e.target.value || null)}
+                    >
+                      {key === "priority" ? <option value="">No priority</option> : null}
+                      {(key === "status"
+                        ? ["todo", "in_progress", "blocked", "done"]
+                        : ["urgent", "high", "medium", "low"]
+                      ).map((v) => (
+                        <option key={v} value={v}>
+                          {v.replaceAll("_", " ")}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <Input
+                      id={id}
+                      className="form-control"
+                      type={key === "dueDate" ? "date" : "text"}
+                      min={key === "dueDate" ? "0001-01-01" : undefined}
+                      max={key === "dueDate" ? "9999-12-31" : undefined}
+                      maxLength={key === "title" ? 300 : key === "assignee" ? 200 : undefined}
+                      value={(proposed as string) ?? ""}
+                      aria-invalid={!!error}
+                      aria-describedby={error ? `${id}-error` : undefined}
+                      onChange={(e) =>
+                        patch(
+                          key,
+                          e.target.value || (key === "title" ? "" : null),
+                          key === "dueDate"
+                            ? e.target.validity.badInput ||
+                                e.target.validity.rangeOverflow ||
+                                e.target.validity.rangeUnderflow ||
+                                undefined
+                            : undefined,
+                        )
+                      }
+                    />
+                  )}
+                  <FieldError id={`${id}-error`} message={error} />
+                </>
+              ) : null}
+            </div>
+          );
+        })}
+      </fieldset>
+      {blocked ? <p role="status">Check saved history before confirming.</p> : null}
+      {saveState ? (
+        <div role="status" className="text-[13px]">
+          {saveState.phase === "saving"
+            ? "Applying update…"
+            : saveState.phase === "checking"
+              ? "Checking saved update…"
+              : saveState.phase === "error"
+                ? "Update rejected. Your edits are retained."
+                : "Update unconfirmed. Check status; retry only the same approval."}
+          {saveState.issue ? (
+            <p>
+              {saveState.issue === "CONFLICT"
+                ? "The task or approval changed. Check saved status; stale tasks require a new proposal."
+                : saveState.issue === "NOT_FOUND"
+                  ? "The proposal or target is unavailable."
+                  : issueMessages[saveState.issue]}
+            </p>
+          ) : null}
+          {saveState.issue === "UNAUTHENTICATED" ? (
+            <Link href="/login" target="_blank" rel="noopener noreferrer" className="underline">
+              Sign in in a new tab
+            </Link>
+          ) : null}
+        </div>
+      ) : null}
+      {!valid && !locked && target.state === "available" && !stale ? (
+        <p className="text-[13px] text-muted-foreground">Select at least one valid field change.</p>
+      ) : null}
+      <div className="flex flex-wrap gap-[8px]">
+        <Button
+          type="submit"
+          disabled={blocked || stale || (saveState?.phase === "retry" ? false : locked || !valid)}
+        >
+          {saveState?.phase === "retry" ? "Retry same approval" : "Confirm update"}
+        </Button>
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={saveState?.phase === "saving" || saveState?.phase === "checking"}
+          onClick={recover}
+        >
+          Check update status
+        </Button>
       </div>
     </form>
   );

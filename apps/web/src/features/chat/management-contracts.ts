@@ -30,9 +30,10 @@ export const managementTaskFields = z.strictObject({
 const {
   taskId: _taskId,
   expectedVersion: _expectedVersion,
+  sourceNoteId: _sourceNoteId,
   ...changeFields
 } = updateTaskInput.shape;
-const changes = z
+export const managementChanges = z
   .strictObject(changeFields)
   .refine(
     (value) => Object.values(value).some((field) => field !== undefined),
@@ -86,7 +87,7 @@ export const managementDraftSchema = bounded(
       taskId: uuid,
       projectId: uuid,
       expectedVersion: version,
-      changes,
+      changes: managementChanges,
     }),
   ]),
 );
@@ -105,7 +106,7 @@ export const confirmManagementProposalInput = bounded(
       kind: z.literal("update_task"),
       taskId: uuid,
       expectedVersion: version,
-      changes,
+      changes: managementChanges,
     }),
   ]),
 );
@@ -146,7 +147,11 @@ export const managementReceiptSchema = bounded(
       .strictObject({
         schemaVersion: z.literal(1),
         kind: z.literal("update_task"),
-        approved: z.strictObject({ taskId: uuid, expectedVersion: version, changes }),
+        approved: z.strictObject({
+          taskId: uuid,
+          expectedVersion: version,
+          changes: managementChanges,
+        }),
         result: z.strictObject({ taskId: uuid, projectId: uuid, version, changed: z.boolean() }),
       })
       .refine(
@@ -200,6 +205,33 @@ const sourceView = z.discriminatedUnion("state", [
     })
     .refine((v) => v.href === `/projects/${v.projectId}/notes/${v.noteId}`),
 ]);
+export const managementUpdateFields = managementTaskFields.omit({ sourceNoteId: true });
+const updateResult = z.discriminatedUnion("state", [
+  unavailable,
+  z
+    .strictObject({
+      state: z.literal("available"),
+      taskId: uuid,
+      projectId: uuid,
+      href: z.string(),
+      currentVersion: version,
+    })
+    .refine((v) => v.href === `/tasks/${v.taskId}`),
+]);
+const updateTarget = z.discriminatedUnion("state", [
+  unavailable,
+  z
+    .strictObject({
+      state: z.literal("available"),
+      taskId: uuid,
+      projectId: uuid,
+      projectName: projectFields.name,
+      href: z.string(),
+      currentVersion: version,
+      fields: managementUpdateFields,
+    })
+    .refine((v) => v.href === `/tasks/${v.taskId}`),
+]);
 const publicDraft = z.discriminatedUnion("kind", [
   z.strictObject({
     schemaVersion: z.literal(1),
@@ -228,7 +260,13 @@ const publicDraft = z.discriminatedUnion("kind", [
       .min(1)
       .max(5),
   }),
-  // Reserved drafts cannot be persisted/executed in this subphase.
+  z.strictObject({
+    schemaVersion: z.literal(1),
+    kind: z.literal("update_task"),
+    expectedVersion: version,
+    changes: managementChanges,
+    target: updateTarget,
+  }),
 ]);
 const projectResult = z.discriminatedUnion("state", [
   unavailable,
@@ -255,7 +293,7 @@ export const managementProposalViewSchema = z
     sourceMessageId: uuid,
     conversationId: uuid,
     turnId: uuid,
-    kind: z.enum(["create_project", "create_tasks"]),
+    kind: z.enum(["create_project", "create_tasks", "update_task"]),
     status: z.enum(["proposed", "confirmed"]),
     draft: publicDraft,
     scopedProject: z.strictObject({ id: uuid, name: projectFields.name }).nullable(),
@@ -265,6 +303,12 @@ export const managementProposalViewSchema = z
         z.strictObject({
           kind: z.literal("create_tasks"),
           results: z.array(taskResult).min(1).max(5),
+        }),
+        z.strictObject({
+          kind: z.literal("update_task"),
+          result: updateResult,
+          version,
+          changed: z.boolean(),
         }),
       ])
       .nullable(),

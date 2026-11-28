@@ -88,19 +88,32 @@ function confirmed(proposal = project): ManagementProposalView {
             kind: "create_project",
             result: { state: "available", projectId, href: `/projects/${projectId}` },
           }
-        : {
-            kind: "create_tasks",
-            results: [
-              {
-                itemId: 1,
+        : proposal.kind === "update_task"
+          ? {
+              kind: "update_task",
+              version: 2,
+              changed: true,
+              result: {
                 state: "available",
                 taskId,
                 projectId,
                 href: `/tasks/${taskId}`,
-                currentVersion: 1,
+                currentVersion: 2,
               },
-            ],
-          },
+            }
+          : {
+              kind: "create_tasks",
+              results: [
+                {
+                  itemId: 1,
+                  state: "available",
+                  taskId,
+                  projectId,
+                  href: `/tasks/${taskId}`,
+                  currentVersion: 1,
+                },
+              ],
+            },
   };
 }
 function view(proposal = project): ChatView {
@@ -778,4 +791,235 @@ test("management a stale confirmed projection cannot change the durable selected
   if (receipt?.kind !== "create_tasks") throw new Error("wrong receipt");
   assert.equal(receipt.results[0]!.itemId, 1);
   assert.equal(receipt.results[0]!.state, "unavailable");
+});
+
+function update(): ManagementProposalView {
+  return {
+    ...project,
+    kind: "update_task",
+    draft: {
+      schemaVersion: 1,
+      kind: "update_task",
+      expectedVersion: 1,
+      changes: { status: "done" },
+      target: {
+        state: "available",
+        taskId,
+        projectId,
+        projectName: "Orion",
+        href: `/tasks/${taskId}`,
+        currentVersion: 1,
+        fields: {
+          title: "Build",
+          description: "Current description",
+          status: "todo",
+          priority: null,
+          assignee: null,
+          dueDate: null,
+        },
+      },
+    },
+  };
+}
+
+test("update transport/history supports bound target metadata and rejects forged scope, links, receipt versions and note references", async () => {
+  const proposal = update();
+  assert.equal(managementProposalViewSchema.safeParse(proposal).success, true);
+  const outcome = await consumeChatResponse(stream(proposal), attempt, () => {}, signal);
+  assert.equal(outcome.kind, "finish");
+  const draft = proposal.draft;
+  if (draft.kind !== "update_task") throw new Error("Wrong kind");
+  for (const bad of [
+    {
+      ...proposal,
+      draft: { ...draft, target: { ...draft.target, href: "https://foreign.example" } },
+    },
+    { ...proposal, scopedProject: { id: noteId, name: "Other" } },
+    {
+      ...confirmed(proposal),
+      receipt: { kind: "update_task", changed: true, version: 9, result: { state: "unavailable" } },
+    },
+  ])
+    assert.deepEqual(fixture(bad as ManagementProposalView).session.getSnapshot().messages, []);
+  await assert.rejects(
+    consumeChatResponse(
+      stream(proposal, { sources: [{ ordinal: 1, state: "unavailable" }] }),
+      attempt,
+      () => {},
+      signal,
+    ),
+    TransportFailure,
+  );
+});
+
+test("update preview fixes identity/version, shows current and proposed fields, and submits only explicitly checked changes", async () => {
+  const proposal = update();
+  const html = preview(proposal);
+  assert.match(html, /Task update draft — not applied/);
+  assert.match(html, /Orion · Build/);
+  assert.match(html, /expected version 1/);
+  assert.match(html, /Current: todo/);
+  assert.match(html, /Confirm update/);
+  assert.match(html, /Unchecked fields and the source-note association stay unchanged/);
+  assert.doesNotMatch(html, /Select a project explicitly|Keep source-note link/);
+  const { session, writes } = fixture(proposal);
+  session.editManagement(proposalId, {
+    kind: "update_task",
+    changes: { status: "done", description: null, assignee: "Dina" },
+  });
+  await session.confirmManagement(proposalId);
+  assert.deepEqual(writes, [
+    {
+      proposalId,
+      kind: "update_task",
+      taskId,
+      expectedVersion: 1,
+      changes: { status: "done", description: null, assignee: "Dina" },
+    },
+  ]);
+  assert.equal(session.getSnapshot().managementReceipts[proposalId]?.status, "confirmed");
+  assert.match(
+    preview(session.getSnapshot().managementReceipts[proposalId]!),
+    /Task update confirmed/,
+  );
+});
+
+test("stale or inaccessible update targets cannot enable first confirmation or substitute a refreshed version", async () => {
+  const proposal = update();
+  if (proposal.draft.kind !== "update_task" || proposal.draft.target.state !== "available")
+    throw new Error("Wrong kind");
+  const stale = {
+    ...proposal,
+    draft: { ...proposal.draft, target: { ...proposal.draft.target, currentVersion: 2 } },
+  };
+  const { session, writes } = fixture(stale);
+  await session.confirmManagement(proposalId);
+  assert.deepEqual(writes, []);
+  assert.match(preview(stale), /Request a new reviewed proposal/);
+  assert.equal(managementPayload(stale, originalManagementEdit(stale)), null);
+  const missing = revokeManagement(proposal);
+  assert.equal(managementPayload(missing, originalManagementEdit(missing)), null);
+  assert.doesNotMatch(preview(missing), new RegExp(`/tasks/${taskId}`));
+  const invalid = fixture(proposal);
+  invalid.session.editManagement(proposalId, { kind: "update_task", changes: { title: "" } });
+  await invalid.session.confirmManagement(proposalId);
+  assert.deepEqual(invalid.writes, []);
+});
+
+test("uncertain task update preserves exact omitted/null changes and retries only after read-only proposed recovery", async () => {
+  const proposal = update();
+  const writes: unknown[] = [];
+  let readable = false;
+  const { session } = fixture(proposal, {
+    confirmManagement: async (payload) => {
+      writes.push(payload);
+      return writes.length === 1
+        ? unavailable()
+        : ok({ proposal: confirmed(proposal), replayed: true });
+    },
+    recoverManagement: async () => (readable ? ok(proposal) : unavailable()),
+  });
+  const edit: ManagementEdit = {
+    kind: "update_task",
+    changes: { status: "done", description: null },
+  };
+  session.editManagement(proposalId, edit);
+  await session.confirmManagement(proposalId);
+  assert.equal(session.getSnapshot().managementSaves[proposalId]?.phase, "uncertain");
+  session.editManagement(proposalId, { kind: "update_task", changes: { status: "todo" } });
+  await session.confirmManagement(proposalId);
+  assert.equal(writes.length, 1);
+  readable = true;
+  await session.recoverManagement(proposalId);
+  assert.equal(session.getSnapshot().managementSaves[proposalId]?.phase, "retry");
+  await session.confirmManagement(proposalId);
+  assert.equal(writes.length, 2);
+  assert.deepEqual(writes[0], writes[1]);
+  assert.deepEqual(session.getSnapshot().managementSaves, {});
+});
+
+test("manual-update conflict recovery shows the stale target while retaining the original submitted version", async () => {
+  const proposal = update();
+  if (proposal.draft.kind !== "update_task" || proposal.draft.target.state !== "available")
+    throw new Error("Wrong kind");
+  const stale = {
+    ...proposal,
+    draft: { ...proposal.draft, target: { ...proposal.draft.target, currentVersion: 2 } },
+  };
+  const { session } = fixture(proposal, {
+    confirmManagement: async () => ({ ok: false, error: { code: "CONFLICT", message: "safe" } }),
+    recoverManagement: async () => ok(stale),
+  });
+  await session.confirmManagement(proposalId);
+  const save = session.getSnapshot().managementSaves[proposalId]!;
+  assert.equal(save.payload.kind, "update_task");
+  if (save.payload.kind !== "update_task") throw new Error("Wrong kind");
+  assert.equal(save.payload.expectedVersion, 1);
+  assert.match(
+    preview(session.getSnapshot().messages[1]!.managementProposal!, { saveState: save }),
+    /Request a new reviewed proposal/,
+  );
+});
+
+test("confirmed no-op or deleted update stays confirmed without recreate controls; cached activation revokes both links", async () => {
+  const proposal = confirmed(update());
+  if (proposal.receipt?.kind !== "update_task") throw new Error("Wrong kind");
+  const noop = { ...proposal, receipt: { ...proposal.receipt, version: 1, changed: false } };
+  assert.match(preview(noop), /No changes needed. Confirmation recorded/);
+  const missing = revokeManagement(proposal);
+  assert.match(preview(missing), /Task update confirmed/);
+  assert.match(preview(missing), /Task unavailable/);
+  assert.doesNotMatch(preview(missing), /Confirm update|Retry same approval|\/tasks\//);
+  const { session, writes } = fixture(proposal, { recoverManagement: async () => ok(missing) });
+  session.invalidateSources();
+  assert.doesNotMatch(JSON.stringify(session.getSnapshot()), new RegExp(`/tasks/${taskId}`));
+  await session.recoverManagement(proposalId);
+  await session.confirmManagement(proposalId);
+  assert.deepEqual(writes, []);
+  assert.equal(session.getSnapshot().managementReceipts[proposalId]?.receipt?.kind, "update_task");
+});
+
+test("late update acknowledgements after retirement cannot repopulate the cached session", async () => {
+  const proposal = update();
+  const pending =
+    deferred<ReturnType<typeof ok<{ proposal: ManagementProposalView; replayed: boolean }>>>();
+  const { session } = fixture(proposal, { confirmManagement: async () => pending.promise });
+  const saving = session.confirmManagement(proposalId);
+  session.retire();
+  pending.resolve(ok({ proposal: confirmed(proposal), replayed: false }));
+  await saving;
+  assert.deepEqual(session.getSnapshot().messages, []);
+  assert.deepEqual(session.getSnapshot().managementReceipts, {});
+});
+
+test("expired or failed update reads immediately revoke target links without discarding local changes", async () => {
+  const proposal = update();
+  const expired = fixture(proposal, {
+    confirmManagement: async () => ({
+      ok: false,
+      error: { code: "UNAUTHENTICATED", message: "safe" },
+    }),
+    recoverManagement: async () => ok(proposal),
+  });
+  expired.session.editManagement(proposalId, {
+    kind: "update_task",
+    changes: { status: "done", description: null },
+  });
+  await expired.session.confirmManagement(proposalId);
+  assert.doesNotMatch(
+    JSON.stringify(expired.session.getSnapshot().messages),
+    new RegExp(`/tasks/${taskId}`),
+  );
+  assert.equal(expired.session.getSnapshot().managementEdits[proposalId]?.kind, "update_task");
+  await expired.session.recoverManagement(proposalId);
+  assert.match(
+    JSON.stringify(expired.session.getSnapshot().messages),
+    new RegExp(`/tasks/${taskId}`),
+  );
+  const unavailable = fixture(proposal);
+  await unavailable.session.recoverManagement(proposalId);
+  assert.doesNotMatch(
+    JSON.stringify(unavailable.session.getSnapshot().messages),
+    new RegExp(`/tasks/${taskId}`),
+  );
 });

@@ -138,6 +138,19 @@ export const listTasksInput = z
 export const listOwnedTasksInput = z
   .strictObject({ projectId: uuid.optional(), ...taskFilters })
   .refine(validTaskRange, "Invalid due-date range");
+// Internal read-only AI lookup: every filter is applied by SQL before the bound.
+export const searchTasksInput = z
+  .strictObject({
+    projectId: uuid.optional(),
+    title: searchNotesInput.shape.query.optional(),
+    projectName: searchNotesInput.shape.query.optional(),
+    status: z.enum(["todo", "in_progress", "blocked", "done", "pending"]).optional(),
+    priority: taskPriority.optional(),
+    dueDateFrom: noteDate.unwrap().optional(),
+    dueDateTo: noteDate.unwrap().optional(),
+    overdueBefore: noteDate.unwrap().optional(),
+  })
+  .refine(validTaskRange, "Invalid due-date range");
 export type CreateTaskInput = z.input<typeof createTaskInput>;
 export type UpdateTaskInput = z.input<typeof updateTaskInput>;
 export type DeleteTaskInput = z.input<typeof deleteTaskInput>;

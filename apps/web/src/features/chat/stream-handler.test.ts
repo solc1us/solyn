@@ -148,6 +148,7 @@ function fixture(
     project?: boolean;
     searchNotes?: Dependencies["workspace"]["searchNotes"];
     searchOwnedNotes?: Dependencies["workspace"]["searchOwnedNotes"];
+    searchTasks?: Dependencies["workspace"]["searchTasks"];
   } = {},
 ) {
   const calls: { operation: string; input: unknown }[] = [];
@@ -203,7 +204,6 @@ function fixture(
     completeManagementProposal: async (input) => {
       calls.push({ operation: "management", input });
       const parsed = input as { content: string; draft: ManagementDraft };
-      if (parsed.draft.kind === "update_task") throw new Error("Reserved");
       const draft =
         parsed.draft.kind === "create_tasks"
           ? {
@@ -227,7 +227,30 @@ function fixture(
                     : i.evidence,
               })),
             }
-          : parsed.draft;
+          : parsed.draft.kind === "update_task"
+            ? {
+                schemaVersion: 1 as const,
+                kind: "update_task" as const,
+                expectedVersion: parsed.draft.expectedVersion,
+                changes: parsed.draft.changes,
+                target: {
+                  state: "available" as const,
+                  taskId: parsed.draft.taskId,
+                  projectId: parsed.draft.projectId,
+                  projectName: "Owned project",
+                  href: `/tasks/${parsed.draft.taskId}`,
+                  currentVersion: parsed.draft.expectedVersion,
+                  fields: {
+                    title: "Task",
+                    description: null,
+                    status: "todo" as const,
+                    priority: null,
+                    assignee: null,
+                    dueDate: null,
+                  },
+                },
+              }
+            : parsed.draft;
       const managementProposal: ManagementProposalView = {
         id: "88888888-8888-4888-8888-888888888888",
         sourceMessageId: assistant.id,
@@ -261,6 +284,12 @@ function fixture(
   const post = createChatStreamHandler({
     chat,
     workspace: {
+      searchTasks: async (input) => {
+        calls.push({ operation: "task-search", input });
+        return options.searchTasks
+          ? options.searchTasks(input)
+          : ok({ items: [], truncated: false, ambiguousProject: false });
+      },
       searchNotes: async (input) => {
         calls.push({ operation: "search", input });
         return options.searchNotes ? options.searchNotes(input) : ok([]);
@@ -393,7 +422,7 @@ test("successful stream uses fixed model, exact persisted input and confirms ful
     content: [{ type: "text", text: user.content }],
     providerOptions: undefined,
   });
-  assert.equal(call.tools?.length, 4);
+  assert.equal(call.tools?.length, 5);
   assert.equal(call.tools?.[0]?.type, "function");
   assert.ok(PROVIDER_TIMEOUT_MS < PENDING_TIMEOUT_MS);
 });
@@ -930,7 +959,7 @@ test("real Groq adapter uses only approved model/options and performs one mocked
           assert.equal(body.reasoning_effort, "low");
           assert.deepEqual(
             body.tools.map((tool: { function: { name: string } }) => tool.function.name).sort(),
-            ["prepareNote", "prepareProject", "prepareTasks", "searchNotes"],
+            ["prepareNote", "prepareProject", "prepareTasks", "searchNotes", "searchTasks"],
           );
           assert.equal(body.parallel_tool_calls, false);
           // A real SDK API-error path, not an injected high-level service result.
@@ -1254,6 +1283,7 @@ test("retrieval searches only the owned conversation scope, then streams and per
     "prepareNote",
     "prepareTasks",
     "searchNotes",
+    "searchTasks",
   ]);
   assert.deepEqual(second.toolChoice, { type: "auto" });
   assert.deepEqual(
@@ -1833,7 +1863,7 @@ test("retrieval works through the installed Groq adapter with exactly two mocked
           if (fetches === 1) {
             assert.deepEqual(
               body.tools.map((entry: { function: { name: string } }) => entry.function.name).sort(),
-              ["prepareNote", "prepareTasks", "searchNotes"],
+              ["prepareNote", "prepareTasks", "searchNotes", "searchTasks"],
             );
             const schema = body.tools.find(
               (entry: { function: { name: string } }) => entry.function.name === "searchNotes",
@@ -1972,14 +2002,14 @@ for (const { name, patterns } of policyRules) {
 test("behavior policy project guidance prioritizes literal retrieval and qualifies empty results", async () => {
   const { instructions, call } = await policyCall(true);
   for (const pattern of [
-    /stored project knowledge, call searchNotes once/,
+    /stored note knowledge, call searchNotes once/,
     /distinctive literal identifier or short keyword\/substring.*ORION-42 or NFC.*not a complete question/,
     /only this conversation's project, at most five excerpts, not full notes/,
     /Never claim to have searched.*unless this turn's tool succeeded/,
     /reference data to answer, not model memory or unsupported history claims/,
     /empty result means only this available search.*not that the entire project has no relevant notes/,
     /Search failure is not an empty result/,
-    /After retrieval give a text answer or call prepareTasks once/,
+    /After searchNotes give a text answer or call prepareTasks once/,
     /interface separately lists retrieved notes, not proof of every claim/,
     /Do not generate citation markers, IDs or note URLs/,
   ])
@@ -1988,6 +2018,7 @@ test("behavior policy project guidance prioritizes literal retrieval and qualifi
     "prepareNote",
     "prepareTasks",
     "searchNotes",
+    "searchTasks",
   ]);
 });
 
@@ -2010,6 +2041,7 @@ test("behavior policy general chat allows owner-wide comparison but preserves ex
     "prepareProject",
     "prepareTasks",
     "searchNotes",
+    "searchTasks",
   ]);
 });
 
@@ -2364,4 +2396,173 @@ test("management incomplete second-step input is rejected even when text and a s
   const parts = events(await (await f.post(request())).text());
   assert.equal(parts.at(-1)!.event, "error");
   assert.ok(!f.calls.some((c) => ["management", "proposal", "complete"].includes(c.operation)));
+});
+
+const taskQuery = {
+  title: "Build",
+  projectName: null,
+  status: null,
+  priority: "any",
+  dueDateFrom: null,
+  dueDateTo: null,
+  overdueBefore: null,
+};
+const foundTask = {
+  id: "99999999-9999-4999-8999-999999999999",
+  projectId: otherTurn,
+  projectName: "Owned project",
+  title: "Build",
+  description: "Review build",
+  status: "todo",
+  priority: null,
+  assignee: null,
+  dueDate: null,
+  version: 3,
+};
+const foundTasks = { items: [foundTask], truncated: false, ambiguousProject: false };
+const updatePreparation = { ordinal: 1, changes: { status: "done" } };
+function taskRetrievalModel(
+  second = model("The stored task is todo; priority and deadline are unspecified."),
+) {
+  return retrievalModel(toolModel(taskQuery, { name: "searchTasks" }), second);
+}
+for (const project of [false, true])
+  test(`searchTasks provides bounded current task facts without IDs/note references (project=${project})`, async () => {
+    const f = fixture({
+      project,
+      model: taskRetrievalModel(),
+      searchTasks: async () => ok(foundTasks),
+    });
+    const parts = events(await (await f.post(request())).text());
+    assert.equal(parts.at(-1)!.event, "finish");
+    const search = f.calls.find((c) => c.operation === "task-search")!.input as Record<
+      string,
+      unknown
+    >;
+    assert.equal(search.projectId, project ? otherTurn : undefined);
+    assert.equal(search.title, "Build");
+    const prompt = JSON.stringify(
+      f.provider.doStreamCalls[1]!.prompt.filter((m) => m.role === "tool"),
+    );
+    assert.match(prompt, /ordinal|Build|todo/);
+    assert.doesNotMatch(prompt, new RegExp(foundTask.id + "|" + foundTask.projectId));
+    assert.deepEqual(
+      f.provider.doStreamCalls[1]!.tools?.map((t) => t.name),
+      ["prepareTaskUpdate"],
+    );
+    assert.equal(f.provider.doStreamCalls[1]!.maxOutputTokens, MAX_OUTPUT_TOKENS - 5);
+    const saved = f.calls.find((c) => c.operation === "complete")!.input;
+    assert.equal("sourceRefs" in (saved as object), false);
+    assert.ok(!f.calls.some((c) => c.operation === "management"));
+    assert.equal(f.provider.doStreamCalls.length, 2);
+  });
+for (const project of [false, true])
+  test(`searchTasks to prepareTaskUpdate persists only a server-bound draft (project=${project})`, async () => {
+    const f = fixture({
+      project,
+      model: taskRetrievalModel(toolModel(updatePreparation, { name: "prepareTaskUpdate" })),
+      searchTasks: async () => ok(foundTasks),
+    });
+    const parts = events(await (await f.post(request())).text());
+    assert.equal(parts.at(-1)!.event, "finish");
+    assert.equal(parts.at(-1)!.data.managementProposal.kind, "update_task");
+    assert.match(parts.map((p) => p.data.text ?? "").join(""), /No task has been changed/);
+    const saved = f.calls.find((c) => c.operation === "management")!.input as {
+      draft: ManagementDraft;
+      sourceRefs: unknown;
+    };
+    assert.deepEqual(saved.draft, {
+      schemaVersion: 1,
+      kind: "update_task",
+      taskId: foundTask.id,
+      projectId: otherTurn,
+      expectedVersion: 3,
+      changes: { status: "done" },
+    });
+    assert.equal(saved.sourceRefs, null);
+    assert.equal(f.provider.doStreamCalls.length, 2);
+    assert.equal(f.calls.filter((c) => c.operation === "task-search").length, 1);
+  });
+for (const [label, data, prep] of [
+  [
+    "ambiguous tasks",
+    { ...foundTasks, items: [foundTask, { ...foundTask, id: assistant.id }] },
+    updatePreparation,
+  ],
+  ["ambiguous project", { ...foundTasks, ambiguousProject: true }, updatePreparation],
+  ["truncated matches", { ...foundTasks, truncated: true }, updatePreparation],
+  ["empty", { ...foundTasks, items: [] }, updatePreparation],
+  ["forged ordinal", foundTasks, { ...updatePreparation, ordinal: 2 }],
+  ["forged version", foundTasks, { ...updatePreparation, expectedVersion: 4 }],
+  ["substituted source", foundTasks, { ordinal: 1, changes: { sourceNoteId: assistant.id } }],
+  ["unsupported relative deadline", foundTasks, { ordinal: 1, changes: { dueDate: "2026-03-01" } }],
+] as const)
+  test(`search-to-update rejects ${label} without proposal persistence`, async () => {
+    const f = fixture({
+      model: taskRetrievalModel(toolModel(prep, { name: "prepareTaskUpdate" })),
+      searchTasks: async () => ok({ ...data, items: [...data.items] }),
+    });
+    const parts = events(await (await f.post(request())).text());
+    assert.equal(parts.at(-1)!.event, "error");
+    assert.ok(!f.calls.some((c) => ["management", "complete", "proposal"].includes(c.operation)));
+  });
+for (const name of ["searchNotes", "searchTasks", "prepareNote", "prepareTasks", "prepareProject"])
+  test(`searchTasks second step rejects ${name} without a third generation or retrieval`, async () => {
+    const input =
+      name === "searchTasks"
+        ? taskQuery
+        : name === "searchNotes"
+          ? { query: "x" }
+          : name === "prepareNote"
+            ? noteDraft
+            : name === "prepareTasks"
+              ? taskPreparation
+              : { name: "Project", description: null };
+    const f = fixture({
+      model: taskRetrievalModel(toolModel(input, { name })),
+      searchTasks: async () => ok(foundTasks),
+    });
+    const parts = events(await (await f.post(request())).text());
+    assert.equal(parts.at(-1)!.event, "error");
+    assert.equal(f.provider.doStreamCalls.length, 2);
+    assert.equal(f.calls.filter((c) => c.operation.includes("search")).length, 1);
+  });
+test("prepareTaskUpdate is unavailable initially and after note search; direct/past-task identity cannot authorize it", async () => {
+  for (const provider of [
+    toolModel(updatePreparation, { name: "prepareTaskUpdate" }),
+    retrievalModel(undefined, toolModel(updatePreparation, { name: "prepareTaskUpdate" })),
+  ]) {
+    const f = fixture({ model: provider });
+    const parts = events(await (await f.post(request())).text());
+    assert.equal(parts.at(-1)!.event, "error");
+    assert.ok(!f.calls.some((c) => c.operation === "management"));
+    assert.ok(!f.provider.doStreamCalls[0]!.tools?.some((t) => t.name === "prepareTaskUpdate"));
+  }
+});
+test("task search errors, corrupt summaries, scope mismatch and model-invented date cutoffs fail safely", async () => {
+  for (const result of [
+    denied(),
+    ok({ ...foundTasks, items: [{ ...foundTask, version: 0 }] }),
+    ok({ ...foundTasks, items: [{ ...foundTask, projectId: conversationId }] }),
+  ]) {
+    const f = fixture({
+      project: true,
+      model: taskRetrievalModel(),
+      searchTasks: async () => result,
+    });
+    const parts = events(await (await f.post(request())).text());
+    assert.equal(parts.at(-1)!.event, "error");
+    assert.ok(!f.calls.some((c) => c.operation === "complete"));
+  }
+  for (const query of [
+    { ...taskQuery, overdueBefore: "2026-03-01" },
+    { ...taskQuery, projectName: "Other project" },
+  ]) {
+    const f = fixture({
+      project: true,
+      model: retrievalModel(toolModel(query, { name: "searchTasks" })),
+    });
+    assert.equal(events(await (await f.post(request())).text()).at(-1)!.event, "error");
+    assert.ok(!f.calls.some((c) => c.operation === "task-search"));
+  }
 });

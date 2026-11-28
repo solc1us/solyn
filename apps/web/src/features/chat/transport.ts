@@ -21,7 +21,7 @@ export const issueMessages = {
   PROVIDER_NETWORK: "The provider could not finish. Check saved history before continuing.",
   PROVIDER_TIMEOUT: "The response timed out. Check saved history.",
   PROVIDER_REJECTED: "The provider could not process this message.",
-  SEARCH_UNAVAILABLE: "Project note search is unavailable. Try again in a new turn.",
+  SEARCH_UNAVAILABLE: "Task or note search is unavailable. Try again in a new turn.",
   EMPTY_RESPONSE: "The provider returned no answer.",
   OUTPUT_LIMIT: "The answer reached its limit and is incomplete.",
   CLIENT_ABORTED: "Stop requested. Check saved history for the final status.",
@@ -72,6 +72,7 @@ export function sourcesMatchMessage(
     (message.role === "assistant" &&
       message.status === "completed" &&
       !message.proposal &&
+      message.managementProposal?.kind !== "update_task" &&
       parsed.data.every(
         (source) =>
           source.state === "unavailable" || projectId == null || source.projectId === projectId,
@@ -120,6 +121,28 @@ export function managementMatchesMessage(
       ))
   )
     return false;
+  if (draft.kind === "update_task") {
+    if (
+      draft.target.state === "available" &&
+      proposal.scopedProject &&
+      draft.target.projectId !== proposal.scopedProject.id
+    )
+      return false;
+    if (proposal.receipt?.kind === "update_task") {
+      const receipt = proposal.receipt;
+      if (
+        receipt.version !== draft.expectedVersion + (receipt.changed ? 1 : 0) ||
+        (receipt.result.state === "available" &&
+          proposal.scopedProject &&
+          receipt.result.projectId !== proposal.scopedProject.id) ||
+        (receipt.result.state === "available" &&
+          draft.target.state === "available" &&
+          (receipt.result.taskId !== draft.target.taskId ||
+            receipt.result.projectId !== draft.target.projectId))
+      )
+        return false;
+    }
+  }
   if (proposal.receipt?.kind === "create_tasks") {
     if (draft.kind !== "create_tasks") return false;
     const results = proposal.receipt.results;

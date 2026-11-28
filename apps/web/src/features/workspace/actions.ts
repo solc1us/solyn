@@ -86,6 +86,10 @@ export async function confirmManagementProposal(input: unknown) {
     const receipt = result.data.proposal.receipt;
     if (receipt?.kind === "create_project" && receipt.result.state === "available")
       revalidatePath(receipt.result.href);
+    if (receipt?.kind === "update_task" && receipt.result.state === "available") {
+      revalidatePath(`/projects/${receipt.result.projectId}`);
+      revalidatePath(receipt.result.href);
+    }
     if (receipt?.kind === "create_tasks")
       for (const task of receipt.results) {
         if (task.state === "available") {

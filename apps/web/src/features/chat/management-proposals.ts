@@ -28,7 +28,7 @@ export function parseManagementProposal(
   const receipt = row.receipt === null ? null : managementReceiptSchema.parse(row.receipt);
   if (
     row.kind !== draft.kind ||
-    draft.kind === "update_task" ||
+    (draft.kind === "update_task" && scopeId !== null && draft.projectId !== scopeId) ||
     (draft.kind === "create_project" && scopeId !== null) ||
     (draft.kind === "create_tasks" &&
       (draft.scopedProjectId !== scopeId ||
@@ -55,6 +55,14 @@ export function parseManagementProposal(
     )
       throw new Error("Invalid stored selection");
   }
+  if (
+    draft.kind === "update_task" &&
+    receipt?.kind === "update_task" &&
+    (receipt.approved.taskId !== draft.taskId ||
+      receipt.approved.expectedVersion !== draft.expectedVersion ||
+      receipt.result.projectId !== draft.projectId)
+  )
+    throw new Error("Invalid update receipt");
   return { draft, receipt };
 }
 
@@ -67,6 +75,7 @@ export function managementEvidence(draft: ManagementDraft) {
 }
 export function managementReferencesMatch(draft: ManagementDraft, refs: unknown) {
   const parsed = sourceRefsSchema.nullable().parse(refs);
+  if (draft.kind === "update_task") return parsed === null;
   return managementEvidence(draft).every((evidence) =>
     parsed?.some(
       (ref) =>
@@ -130,7 +139,11 @@ export async function readManagementProposals(tx: Transaction, ownerId: string, 
   const taskIds = [
     ...new Set(
       parsed.flatMap((row) =>
-        row.receipt?.kind === "create_tasks" ? row.receipt.results.map((r) => r.taskId) : [],
+        row.draft.kind === "update_task"
+          ? [row.draft.taskId]
+          : row.receipt?.kind === "create_tasks"
+            ? row.receipt.results.map((r) => r.taskId)
+            : [],
       ),
     ),
   ];
@@ -150,7 +163,18 @@ export async function readManagementProposals(tx: Transaction, ownerId: string, 
     : [];
   const foundTasks = taskIds.length
     ? await tx
-        .select({ id: tasks.id, projectId: tasks.projectId, version: tasks.version })
+        .select({
+          id: tasks.id,
+          projectId: tasks.projectId,
+          version: tasks.version,
+          projectName: projects.name,
+          title: tasks.title,
+          description: tasks.description,
+          status: tasks.status,
+          priority: tasks.priority,
+          assignee: tasks.assignee,
+          dueDate: tasks.dueDate,
+        })
         .from(tasks)
         .innerJoin(projects, eq(projects.id, tasks.projectId))
         .where(and(inArray(tasks.id, taskIds), eq(projects.ownerId, ownerId)))
@@ -196,7 +220,38 @@ export async function readManagementProposals(tx: Transaction, ownerId: string, 
               };
             }),
           }
-        : row.draft;
+        : row.draft.kind === "update_task"
+          ? (() => {
+              const original = row.draft;
+              const task = foundTasks.find(
+                (t) => t.id === original.taskId && t.projectId === original.projectId,
+              );
+              return {
+                schemaVersion: 1,
+                kind: "update_task",
+                expectedVersion: original.expectedVersion,
+                changes: original.changes,
+                target: task
+                  ? {
+                      state: "available",
+                      taskId: task.id,
+                      projectId: task.projectId,
+                      projectName: task.projectName,
+                      href: `/tasks/${task.id}`,
+                      currentVersion: task.version,
+                      fields: {
+                        title: task.title,
+                        description: task.description,
+                        status: task.status,
+                        priority: task.priority,
+                        assignee: task.assignee,
+                        dueDate: task.dueDate,
+                      },
+                    }
+                  : { state: "unavailable" },
+              };
+            })()
+          : row.draft;
     const savedReceipt = row.receipt;
     const receipt =
       savedReceipt?.kind === "create_project"
@@ -229,7 +284,29 @@ export async function readManagementProposals(tx: Transaction, ownerId: string, 
                   : { itemId: r.itemId, state: "unavailable" };
               }),
             }
-          : null;
+          : savedReceipt?.kind === "update_task"
+            ? {
+                kind: "update_task",
+                version: savedReceipt.result.version,
+                changed: savedReceipt.result.changed,
+                result: (() => {
+                  const task = foundTasks.find(
+                    (t) =>
+                      t.id === savedReceipt.result.taskId &&
+                      t.projectId === savedReceipt.result.projectId,
+                  );
+                  return task
+                    ? {
+                        state: "available",
+                        taskId: task.id,
+                        projectId: task.projectId,
+                        href: `/tasks/${task.id}`,
+                        currentVersion: task.version,
+                      }
+                    : { state: "unavailable" };
+                })(),
+              }
+            : null;
     const view = managementProposalViewSchema.parse({
       id: row.id,
       sourceMessageId: row.sourceMessageId,

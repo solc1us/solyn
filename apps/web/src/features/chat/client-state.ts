@@ -619,6 +619,14 @@ export class ChatSession {
           previous?.phase === "retry"
         )
           throw new TransportFailure(safeIssue(result.error.code));
+        if (result.error.code === "UNAUTHENTICATED" && proposal.kind === "update_task")
+          this.set({
+            messages: this.state.messages.map((m) =>
+              m.managementProposal?.id === id
+                ? { ...m, managementProposal: revokeManagement(m.managementProposal) }
+                : m,
+            ),
+          });
         this.managementSave(id, { ...save, phase: "error", issue: safeIssue(result.error.code) });
         return;
       }
@@ -679,23 +687,47 @@ export class ChatSession {
         if (fresh) this.acceptManagement(view, expected);
         else if (!this.state.managementReceipts[id])
           this.acceptManagement(revokeManagement(view), expected);
-      } else if (save && !this.state.managementReceipts[id])
-        this.managementSave(id, {
-          ...save,
-          phase: fresh ? (save.phase === "error" ? "error" : "retry") : "uncertain",
-          issue: save.issue,
-        });
+      } else if (!this.state.managementReceipts[id]) {
+        if (fresh)
+          this.set({
+            messages: this.state.messages.map((m) =>
+              m.managementProposal?.id === id ? { ...m, managementProposal: view } : m,
+            ),
+          });
+        if (save)
+          this.managementSave(id, {
+            ...save,
+            phase: fresh ? (save.phase === "error" ? "error" : "retry") : "uncertain",
+            issue: save.issue,
+          });
+      }
     } catch (error) {
       if (this.retired) return;
       if (this.state.managementReceipts[id])
         this.set({
           managementReceipts: { [id]: revokeManagement(this.state.managementReceipts[id]!) },
         });
-      else if (save)
+      else if (save) {
+        if (expected.kind === "update_task")
+          this.set({
+            messages: this.state.messages.map((m) =>
+              m.managementProposal?.id === id
+                ? { ...m, managementProposal: revokeManagement(m.managementProposal) }
+                : m,
+            ),
+          });
         this.managementSave(id, {
           ...save,
           phase: "uncertain",
           issue: error instanceof TransportFailure ? error.code : "UNAVAILABLE",
+        });
+      } else if (expected.kind === "update_task")
+        this.set({
+          messages: this.state.messages.map((m) =>
+            m.managementProposal?.id === id
+              ? { ...m, managementProposal: revokeManagement(m.managementProposal) }
+              : m,
+          ),
         });
     }
   }

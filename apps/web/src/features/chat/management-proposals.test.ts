@@ -703,7 +703,7 @@ test("conflicting project approval is rejected and unavailable project results r
   assert.ok(!JSON.stringify(result).includes(projectId));
   f.done();
 });
-test("mixed stored proposals and reserved update execution fail closed", async () => {
+test("mixed stored proposals and unsupported update changes fail closed", async () => {
   const f = fixture([
     begin,
     discover,
@@ -714,18 +714,22 @@ test("mixed stored proposals and reserved update execution fail closed", async (
   denied(await f.workspace.confirmManagementProposal(projectApproval), "CONFLICT");
   f.done();
   const update = { kind: "update_task", taskId, expectedVersion: 1, changes: { status: "done" } };
-  const reserved = fixture([begin, rollback, begin, rollback]);
+  const invalid = fixture();
   denied(
-    await reserved.workspace.confirmManagementProposal({ proposalId, ...update }),
+    await invalid.workspace.confirmManagementProposal({
+      proposalId,
+      ...update,
+      changes: { sourceNoteId: noteId },
+    }),
     "INVALID_INPUT",
   );
   denied(
-    await reserved.chat.completeManagementProposal(
-      completion({ schemaVersion: 1, projectId, ...update }),
+    await invalid.chat.completeManagementProposal(
+      completion({ schemaVersion: 1, projectId, ...update, changes: { projectId } }),
     ),
     "INVALID_INPUT",
   );
-  reserved.done();
+  invalid.done();
 });
 test("internal management completion atomically completes assistant and persists draft, never creates knowledge", async () => {
   const f = fixture([...completionStart, user, ...completionEnd]);
@@ -1121,4 +1125,386 @@ test("actions expose only authenticated confirmation/recovery and revalidate aft
     workspace,
     /const result = await workspace.confirmManagementProposal\(input\);\s*if \(result.ok\)/,
   );
+});
+
+const updateDraft = {
+  schemaVersion: 1 as const,
+  kind: "update_task" as const,
+  taskId,
+  projectId,
+  expectedVersion: 1,
+  changes: { status: "done" as const },
+};
+const updateApproval = {
+  proposalId,
+  kind: "update_task" as const,
+  taskId,
+  expectedVersion: 1,
+  changes: { status: "done" as const },
+};
+const updateReceipt = (changed = true, changes: unknown = { status: "done" }) => ({
+  schemaVersion: 1,
+  kind: "update_task",
+  approved: { taskId, expectedVersion: 1, changes },
+  result: { taskId, projectId, version: changed ? 2 : 1, changed },
+});
+const fullTask = (overrides: object = {}) => ({
+  id: taskId,
+  projectId,
+  title: "Task",
+  description: null,
+  status: "todo",
+  priority: null,
+  assignee: null,
+  dueDate: null,
+  sourceNoteId: noteId,
+  version: 1,
+  createdAt: now,
+  updatedAt: now,
+  completedAt: null,
+  ...overrides,
+});
+const lockUpdateTask = (overrides: object = {}): Step => ({
+  sql: /from "tasks".*for update of "tasks"$/,
+  rows: [Object.values(fullTask(overrides))],
+  inspect: owned,
+});
+const updateTarget = (version = 2, status = "done"): Step => ({
+  sql: /from "tasks" inner join "projects"/,
+  rows: [[taskId, projectId, version, "Project", "Task", null, status, null, null, null]],
+  inspect: owned,
+});
+const updateTaskWrite: Step = {
+  sql: /^update "tasks"/,
+  rows: [Object.values(fullTask({ status: "done", version: 2, completedAt: now }))],
+  inspect: (s, p) => {
+    owned(s, p);
+    assert.ok(p.includes(noteId), "Source-note association must be preserved");
+    assert.match(s, /"version" = \$/);
+  },
+};
+
+test("update confirmation atomically shares the manual task core, preserves source association and records the actual result", async () => {
+  const f = fixture([
+    begin,
+    discover,
+    conversation,
+    locked(updateDraft),
+    project,
+    lockUpdateTask(),
+    updateTaskWrite,
+    receiptUpdate,
+    view(updateDraft, updateReceipt()),
+    updateTarget(),
+    commit,
+  ]);
+  const result = data(await f.workspace.confirmManagementProposal(updateApproval));
+  assert.equal(result.replayed, false);
+  assert.equal(result.proposal.status, "confirmed");
+  assert.equal(result.proposal.receipt?.kind, "update_task");
+  if (result.proposal.receipt?.kind !== "update_task") throw new Error("Wrong kind");
+  assert.equal(result.proposal.receipt.changed, true);
+  assert.equal(result.proposal.receipt.version, 2);
+  assert.equal(result.proposal.receipt.result.state, "available");
+  assert.doesNotMatch(f.calls.join("\n"), /insert into "tasks"|from "notes"|update "notes"/);
+  f.done();
+});
+
+test("update no-op validates the version first, does not touch task timestamps and still atomically confirms", async () => {
+  const approval = { ...updateApproval, changes: { title: "Task" } };
+  const f = fixture([
+    begin,
+    discover,
+    conversation,
+    locked(updateDraft),
+    project,
+    lockUpdateTask(),
+    receiptUpdate,
+    view(updateDraft, updateReceipt(false, approval.changes)),
+    updateTarget(1, "todo"),
+    commit,
+  ]);
+  const result = data(await f.workspace.confirmManagementProposal(approval));
+  assert.equal(result.proposal.receipt?.kind, "update_task");
+  if (result.proposal.receipt?.kind !== "update_task") throw new Error("Wrong kind");
+  assert.equal(result.proposal.receipt.changed, false);
+  assert.equal(result.proposal.receipt.version, 1);
+  assert.ok(!f.calls.some((s) => s.startsWith('update "tasks"')));
+  f.done();
+});
+
+test("update reopen clears completion, preserves omitted fields and applies explicit nullable clears", async () => {
+  const changes = {
+    status: "todo",
+    description: null,
+    assignee: null,
+    priority: null,
+    dueDate: null,
+  };
+  const f = fixture([
+    begin,
+    discover,
+    conversation,
+    locked(updateDraft),
+    project,
+    lockUpdateTask({
+      status: "done",
+      completedAt: now,
+      description: "Old",
+      priority: "high",
+      assignee: "A",
+      dueDate: "2026-01-01",
+    }),
+    {
+      sql: /^update "tasks"/,
+      rows: [Object.values(fullTask({ version: 2 }))],
+      inspect: (s, p) => {
+        assert.match(s, /"completed_at" = \$/);
+        assert.ok(p.includes(null));
+        assert.ok(p.includes(noteId));
+      },
+    },
+    receiptUpdate,
+    view(updateDraft, updateReceipt(true, changes)),
+    updateTarget(2, "todo"),
+    commit,
+  ]);
+  data(await f.workspace.confirmManagementProposal({ ...updateApproval, changes }));
+  f.done();
+});
+
+for (const [label, taskOverride, code] of [
+  ["manual edit", { version: 2 }, "CONFLICT"],
+  ["moved project", { projectId: otherProjectId }, "NOT_FOUND"],
+  ["overflow", { version: 2147483647 }, "CONFLICT"],
+] as const)
+  test(`update confirmation denies ${label} without task/receipt writes`, async () => {
+    const f = fixture([
+      begin,
+      discover,
+      conversation,
+      locked(updateDraft),
+      project,
+      lockUpdateTask(taskOverride),
+      rollback,
+    ]);
+    denied(await f.workspace.confirmManagementProposal(updateApproval), code);
+    assert.ok(!f.calls.some((s) => s.startsWith("update")));
+    f.done();
+  });
+
+test("update proposals authenticate freshly and deny missing owned proposal discovery", async () => {
+  const anonymous = fixture([], null);
+  denied(
+    await anonymous.chat.completeManagementProposal(completion(updateDraft)),
+    "UNAUTHENTICATED",
+  );
+  denied(await anonymous.workspace.confirmManagementProposal(updateApproval), "UNAUTHENTICATED");
+  anonymous.done();
+  const absent = fixture([begin, { ...discover, rows: [] }, rollback]);
+  denied(await absent.workspace.confirmManagementProposal(updateApproval), "NOT_FOUND");
+  absent.done();
+});
+
+test("update proposal meaningful overflow is rejected without substituting a new version", async () => {
+  const draft = { ...updateDraft, expectedVersion: 2147483647 };
+  const f = fixture([
+    begin,
+    discover,
+    conversation,
+    locked(draft),
+    project,
+    lockUpdateTask({ version: 2147483647 }),
+    rollback,
+  ]);
+  denied(
+    await f.workspace.confirmManagementProposal({ ...updateApproval, expectedVersion: 2147483647 }),
+    "CONFLICT",
+  );
+  f.done();
+});
+
+test("update confirmation cannot refresh identity/version or write a deleted or foreign target", async () => {
+  for (const approval of [
+    { ...updateApproval, taskId: id(8) },
+    { ...updateApproval, expectedVersion: 2 },
+  ]) {
+    const f = fixture([begin, discover, conversation, locked(updateDraft), rollback]);
+    denied(await f.workspace.confirmManagementProposal(approval), "CONFLICT");
+    f.done();
+  }
+  const missingTarget = fixture([
+    begin,
+    discover,
+    conversation,
+    locked(updateDraft),
+    project,
+    { ...lockUpdateTask(), rows: [] },
+    rollback,
+  ]);
+  denied(await missingTarget.workspace.confirmManagementProposal(updateApproval), "NOT_FOUND");
+  missingTarget.done();
+});
+
+test("update statement, missing RETURNING, receipt or commit failures never report partial success", async () => {
+  for (const failed of [0, 1, 2, 5]) {
+    const tail = [
+      updateTaskWrite,
+      receiptUpdate,
+      view(updateDraft, updateReceipt()),
+      updateTarget(),
+      commit,
+    ];
+    const index = failed === 5 ? 4 : failed;
+    const f = fixture([
+      begin,
+      discover,
+      conversation,
+      locked(updateDraft),
+      project,
+      lockUpdateTask(),
+      ...tail.slice(0, index),
+      { ...tail[index]!, error: true },
+      rollback,
+    ]);
+    denied(await f.workspace.confirmManagementProposal(updateApproval), "UNAVAILABLE");
+    f.done();
+  }
+  const f = fixture([
+    begin,
+    discover,
+    conversation,
+    locked(updateDraft),
+    project,
+    lockUpdateTask(),
+    { ...updateTaskWrite, rows: [] },
+    rollback,
+  ]);
+  denied(await f.workspace.confirmManagementProposal(updateApproval), "CONFLICT");
+  f.done();
+});
+
+for (const exists of [false, true])
+  test(`exact update replay ignores later version/availability, never reexecutes (exists=${exists})`, async () => {
+    const f = fixture([
+      begin,
+      discover,
+      conversation,
+      locked(updateDraft, updateReceipt()),
+      view(updateDraft, updateReceipt()),
+      exists ? updateTarget(9, "todo") : { ...updateTarget(), rows: [] },
+      commit,
+    ]);
+    const result = data(await f.workspace.confirmManagementProposal(updateApproval));
+    assert.equal(result.replayed, true);
+    if (result.proposal.receipt?.kind !== "update_task") throw new Error("Wrong kind");
+    assert.equal(result.proposal.receipt.version, 2);
+    assert.equal(result.proposal.receipt.result.state, exists ? "available" : "unavailable");
+    if (!exists) assert.doesNotMatch(JSON.stringify(result.proposal.receipt), new RegExp(taskId));
+    assert.ok(!f.calls.some((s) => /^(insert|update|delete)/.test(s)));
+    f.done();
+  });
+
+test("different confirmed update approval conflicts without touching a later manual edit", async () => {
+  const f = fixture([
+    begin,
+    discover,
+    conversation,
+    locked(updateDraft, updateReceipt()),
+    rollback,
+  ]);
+  denied(
+    await f.workspace.confirmManagementProposal({ ...updateApproval, changes: { status: "todo" } }),
+    "CONFLICT",
+  );
+  f.done();
+});
+
+test("update completion reauthorizes and share-locks the current target version before atomic proposal persistence", async () => {
+  const f = fixture([
+    ...completionStart,
+    user,
+    project,
+    { sql: /from "tasks".*for share of "tasks"$/, rows: [[taskId, 1]], inspect: owned },
+    clock,
+    terminal,
+    insertProposal,
+    touch,
+    view(updateDraft),
+    updateTarget(1, "todo"),
+    commit,
+  ]);
+  const result = data(await f.chat.completeManagementProposal(completion(updateDraft)));
+  assert.equal(result.managementProposal.kind, "update_task");
+  assert.ok(!f.calls.some((s) => /^(insert|update) (?:into )?"tasks"/.test(s)));
+  f.done();
+});
+
+test("update completion rejects stale/missing/fixed-scope targets and fabricated note references", async () => {
+  for (const [rows, code] of [
+    [[[taskId, 2]], "CONFLICT"],
+    [[], "NOT_FOUND"],
+  ] as const) {
+    const f = fixture([
+      ...completionStart,
+      user,
+      project,
+      { sql: /from "tasks".*for share of "tasks"$/, rows: [...rows], inspect: owned },
+      rollback,
+    ]);
+    denied(await f.chat.completeManagementProposal(completion(updateDraft)), code);
+    f.done();
+  }
+  const scope = fixture([
+    begin,
+    { ...chatLock, rows: [conversationRow(otherProjectId)] },
+    response(),
+    emptyExisting,
+    rollback,
+  ]);
+  denied(await scope.chat.completeManagementProposal(completion(updateDraft)), "INVALID_INPUT");
+  scope.done();
+  const refs = fixture([...completionStart, rollback]);
+  denied(
+    await refs.chat.completeManagementProposal(completion(updateDraft, [ref])),
+    "INVALID_INPUT",
+  );
+  refs.done();
+});
+
+test("exact update completion replay returns its later receipt without current-version validation or writes", async () => {
+  const f = fixture([
+    begin,
+    chatLock,
+    response("completed"),
+    { sql: /^select "draft" from "management_proposals"/, rows: [[updateDraft]] },
+    view(updateDraft, updateReceipt()),
+    updateTarget(8),
+    commit,
+  ]);
+  assert.equal(
+    data(await f.chat.completeManagementProposal(completion(updateDraft))).managementProposal
+      .status,
+    "confirmed",
+  );
+  assert.ok(!f.calls.some((s) => /^(insert|update|delete)/.test(s)));
+  f.done();
+});
+
+test("read-only update recovery exposes minimum current target fields and hides unavailable IDs", async () => {
+  for (const available of [false, true]) {
+    const f = fixture([
+      { sql: /^begin isolation level repeatable read read only$/ },
+      view(updateDraft),
+      available ? updateTarget(3, "todo") : { ...updateTarget(), rows: [] },
+      commit,
+    ]);
+    const result = data(await f.chat.getManagementProposal({ proposalId }));
+    assert.equal(result.draft.kind, "update_task");
+    if (result.draft.kind !== "update_task") throw new Error("Wrong kind");
+    assert.equal(result.draft.target.state, available ? "available" : "unavailable");
+    if (!available)
+      assert.doesNotMatch(JSON.stringify(result), new RegExp(taskId + "|" + projectId));
+    f.done();
+  }
 });

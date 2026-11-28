@@ -3,7 +3,7 @@ import {
   chatConversations as conversations,
   chatMessages as messages,
 } from "@solyn/db/schema/chat";
-import { notes, projects } from "@solyn/db/schema/workspace";
+import { notes, projects, tasks } from "@solyn/db/schema/workspace";
 import { noteProposals } from "@solyn/db/schema/note-proposals";
 import { managementProposals } from "@solyn/db/schema/management-proposals";
 import * as management from "./management-contracts";
@@ -859,8 +859,6 @@ export function createChatService({
       return run(management.completeManagementProposalInput, input, (value, ownerId) =>
         db.transaction(
           async (tx) => {
-            if (value.draft.kind === "update_task")
-              throw new ChatError("INVALID_INPUT", "Task update proposals are not enabled.");
             const conversation = await lock(tx, ownerId, value.conversationId);
             const [response] = await tx
               .select(messageFields)
@@ -912,6 +910,9 @@ export function createChatService({
               (value.draft.kind === "create_project" && conversation.projectId !== null) ||
               (value.draft.kind === "create_tasks" &&
                 value.draft.scopedProjectId !== conversation.projectId) ||
+              (value.draft.kind === "update_task" &&
+                conversation.projectId !== null &&
+                value.draft.projectId !== conversation.projectId) ||
               (conversation.projectId !== null &&
                 value.sourceRefs?.some((ref) => ref.projectId !== conversation.projectId)) ||
               !managementReferencesMatch(value.draft, value.sourceRefs)
@@ -936,6 +937,29 @@ export function createChatService({
                 .where(and(eq(projects.id, conversation.projectId), eq(projects.ownerId, ownerId)))
                 .for("share");
               if (!project) throw missing();
+            }
+            if (value.draft.kind === "update_task") {
+              const draft = value.draft;
+              const [project] = await tx
+                .select({ id: projects.id })
+                .from(projects)
+                .where(and(eq(projects.id, draft.projectId), eq(projects.ownerId, ownerId)))
+                .for("share");
+              if (!project) throw missing();
+              const [task] = await tx
+                .select({ id: tasks.id, version: tasks.version })
+                .from(tasks)
+                .innerJoin(projects, eq(projects.id, tasks.projectId))
+                .where(
+                  and(
+                    eq(tasks.id, draft.taskId),
+                    eq(tasks.projectId, draft.projectId),
+                    eq(projects.ownerId, ownerId),
+                  ),
+                )
+                .for("share", { of: tasks });
+              if (!task) throw missing();
+              if (task.version !== draft.expectedVersion) throw conflict();
             }
             // Server-held retrieval references are private; reauthorize and lock all
             // sources in stable order, including references unused by selected items.
