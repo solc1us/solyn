@@ -15,7 +15,7 @@
 
 Confirmation validates edited fields, fixed project scope, unique existing item subsets and current evidence/timestamps, even after clearing a source link. All selected tasks and the immutable receipt commit together; unselected items cannot be added by replay. Exact canonical replay returns original identities through current authorized availability projections, without writes or rechecking later source/task edits. Deleted/inaccessible results are unavailable without IDs/links and never recreated. Success `{proposal, replayed}` is returned only after transaction completion, with route revalidation afterward. Reserved task-update confirmation is explicitly disabled.
 
-Only the dedicated authenticated action is exposed; chat recovery/history is read-only. No AI tools, streaming integration or proposal UI is added. The generated management migration is **not applied**; separately approved rollout must precede enabling services/history against that target. Offline scripted transaction checks do not prove real PostgreSQL rollback/concurrency or authenticated browser behavior.
+Only the dedicated authenticated action is exposed; chat recovery/history is read-only. P5.4B added no AI/UI integration; P5.4C now calls this same action from editable chat previews, with schema-only preparation tools and read-only uncertainty recovery (see the [chat README](../chat/README.md)). There is still no model-executable knowledge-write tool or P5.5 task-update execution. The generated management migration is **not applied**; separately approved rollout must precede enabling services/history against that target. Offline scripted transaction checks do not prove real PostgreSQL rollback/concurrency or authenticated browser behavior.
 
 ## Phase 1E frontend
 

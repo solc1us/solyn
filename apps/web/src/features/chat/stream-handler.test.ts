@@ -19,7 +19,14 @@ import {
   PROVIDER_TIMEOUT_MS,
 } from "./stream-handler";
 import { PENDING_TIMEOUT_MS } from "./service";
-import { safeIssue } from "./transport";
+import { safeIssue, consumeChatResponse } from "./transport";
+import { type ManagementDraft, type ManagementProposalView } from "./management-contracts";
+import {
+  prepareManagementDraft,
+  prepareProjectInput,
+  prepareTasksInput,
+  MANAGEMENT_PROPOSAL_MESSAGE,
+} from "./management-preparation";
 
 type Dependencies = Parameters<typeof createChatStreamHandler>[0];
 type Chat = Dependencies["chat"];
@@ -193,6 +200,46 @@ function fixture(
         },
       });
     },
+    completeManagementProposal: async (input) => {
+      calls.push({ operation: "management", input });
+      const parsed = input as { content: string; draft: ManagementDraft };
+      if (parsed.draft.kind === "update_task") throw new Error("Reserved");
+      const draft =
+        parsed.draft.kind === "create_tasks"
+          ? {
+              ...parsed.draft,
+              items: parsed.draft.items.map((i) => ({
+                ...i,
+                evidence:
+                  i.evidence.type === "retrieved_note"
+                    ? {
+                        type: "retrieved_note" as const,
+                        excerptOnly: true as const,
+                        source: {
+                          state: "available" as const,
+                          noteId: i.evidence.noteId,
+                          projectId: i.evidence.projectId,
+                          updatedAt: i.evidence.retrievedUpdatedAt,
+                          retrievedUpdatedAt: i.evidence.retrievedUpdatedAt,
+                          href: `/projects/${i.evidence.projectId}/notes/${i.evidence.noteId}`,
+                        },
+                      }
+                    : i.evidence,
+              })),
+            }
+          : parsed.draft;
+      const managementProposal: ManagementProposalView = {
+        id: "88888888-8888-4888-8888-888888888888",
+        sourceMessageId: assistant.id,
+        ...turn,
+        kind: parsed.draft.kind,
+        draft,
+        scopedProject: options.project ? { id: otherTurn, name: "Owned project" } : null,
+        status: "proposed",
+        receipt: null,
+      };
+      return ok({ ...assistant, status: "completed", content: parsed.content, managementProposal });
+    },
     failResponse: async (input) => {
       calls.push({ operation: "fail", input });
       return ok({
@@ -346,7 +393,7 @@ test("successful stream uses fixed model, exact persisted input and confirms ful
     content: [{ type: "text", text: user.content }],
     providerOptions: undefined,
   });
-  assert.equal(call.tools?.length, 2);
+  assert.equal(call.tools?.length, 4);
   assert.equal(call.tools?.[0]?.type, "function");
   assert.ok(PROVIDER_TIMEOUT_MS < PENDING_TIMEOUT_MS);
 });
@@ -883,7 +930,7 @@ test("real Groq adapter uses only approved model/options and performs one mocked
           assert.equal(body.reasoning_effort, "low");
           assert.deepEqual(
             body.tools.map((tool: { function: { name: string } }) => tool.function.name).sort(),
-            ["prepareNote", "searchNotes"],
+            ["prepareNote", "prepareProject", "prepareTasks", "searchNotes"],
           );
           assert.equal(body.parallel_tool_calls, false);
           // A real SDK API-error path, not an injected high-level service result.
@@ -932,7 +979,11 @@ function toolModel(
             : []),
           ...(options.fragmentOnly
             ? [
-                { type: "tool-input-start" as const, id: "call", toolName: "prepareNote" },
+                {
+                  type: "tool-input-start" as const,
+                  id: "call",
+                  toolName: options.name ?? "prepareNote",
+                },
                 {
                   type: "tool-input-delta" as const,
                   id: "call",
@@ -1199,9 +1250,16 @@ test("retrieval searches only the owned conversation scope, then streams and per
   assert.equal(provider.doStreamCalls.length, 2);
   const first = provider.doStreamCalls[0]!;
   const second = provider.doStreamCalls[1]!;
-  assert.deepEqual(first.tools?.map((entry) => entry.name).sort(), ["prepareNote", "searchNotes"]);
-  assert.deepEqual(second.toolChoice, { type: "none" });
-  assert.equal(second.tools?.length ?? 0, 0);
+  assert.deepEqual(first.tools?.map((entry) => entry.name).sort(), [
+    "prepareNote",
+    "prepareTasks",
+    "searchNotes",
+  ]);
+  assert.deepEqual(second.toolChoice, { type: "auto" });
+  assert.deepEqual(
+    second.tools?.map((t) => t.name),
+    ["prepareTasks"],
+  );
   assert.equal(second.maxOutputTokens, MAX_OUTPUT_TOKENS - 5);
   const toolContext = JSON.stringify(second.prompt.filter((message) => message.role === "tool"));
   assert.match(toolContext, /Budget decision|budget review/);
@@ -1297,7 +1355,11 @@ test("retrieval general chat captures all authorized project origins and persist
   );
   assert.match(data, /Orion/);
   assert.match(data, /Vega/);
-  assert.deepEqual(f.provider.doStreamCalls[1]!.toolChoice, { type: "none" });
+  assert.deepEqual(f.provider.doStreamCalls[1]!.toolChoice, { type: "auto" });
+  assert.deepEqual(
+    f.provider.doStreamCalls[1]!.tools?.map((t) => t.name),
+    ["prepareTasks"],
+  );
 });
 
 test("retrieval general chat rejects missing or invalid project metadata and malformed bounded results", async () => {
@@ -1771,7 +1833,7 @@ test("retrieval works through the installed Groq adapter with exactly two mocked
           if (fetches === 1) {
             assert.deepEqual(
               body.tools.map((entry: { function: { name: string } }) => entry.function.name).sort(),
-              ["prepareNote", "searchNotes"],
+              ["prepareNote", "prepareTasks", "searchNotes"],
             );
             const schema = body.tools.find(
               (entry: { function: { name: string } }) => entry.function.name === "searchNotes",
@@ -1792,7 +1854,10 @@ test("retrieval works through the installed Groq adapter with exactly two mocked
             ];
           } else {
             assert.equal(fetches, 2);
-            assert.equal(body.tools?.length ?? 0, 0);
+            assert.deepEqual(
+              body.tools.map((t: { function: { name: string } }) => t.function.name),
+              ["prepareTasks"],
+            );
             assert.match(
               JSON.stringify(
                 body.messages.filter((message: { role: string }) => message.role === "tool"),
@@ -1914,12 +1979,16 @@ test("behavior policy project guidance prioritizes literal retrieval and qualifi
     /reference data to answer, not model memory or unsupported history claims/,
     /empty result means only this available search.*not that the entire project has no relevant notes/,
     /Search failure is not an empty result/,
-    /After retrieval give a text answer only, with no further tools/,
+    /After retrieval give a text answer or call prepareTasks once/,
     /interface separately lists retrieved notes, not proof of every claim/,
     /Do not generate citation markers, IDs or note URLs/,
   ])
     assert.match(instructions, pattern);
-  assert.deepEqual(call.tools?.map((entry) => entry.name).sort(), ["prepareNote", "searchNotes"]);
+  assert.deepEqual(call.tools?.map((entry) => entry.name).sort(), [
+    "prepareNote",
+    "prepareTasks",
+    "searchNotes",
+  ]);
 });
 
 test("behavior policy general chat allows owner-wide comparison but preserves explicit project selection for notes", async () => {
@@ -1936,5 +2005,363 @@ test("behavior policy general chat allows owner-wide comparison but preserves ex
   );
   assert.match(instructions, /general chat.*explicitly select the project before confirmation/);
   assert.doesNotMatch(instructions, /No project note search|open the relevant project chat/);
-  assert.deepEqual(call.tools?.map((entry) => entry.name).sort(), ["prepareNote", "searchNotes"]);
+  assert.deepEqual(call.tools?.map((entry) => entry.name).sort(), [
+    "prepareNote",
+    "prepareProject",
+    "prepareTasks",
+    "searchNotes",
+  ]);
+});
+
+const taskPreparation = {
+  items: [
+    {
+      title: "Review budget",
+      description: null,
+      status: "todo",
+      priority: null,
+      assignee: null,
+      dueDate: null,
+      evidence: { type: "user_message" },
+    },
+  ],
+};
+const retrievedPreparation = {
+  items: [{ ...taskPreparation.items[0], evidence: { type: "retrieved_note", ordinal: 1 } }],
+};
+
+test("management schemas are closed and canonicalization derives IDs, scope and literal dates from trusted turn data", () => {
+  const input = { name: "  Orion  ", description: null };
+  assert.deepEqual(prepareProjectInput.parse(input), { ...input, name: "Orion" });
+  assert.equal(prepareProjectInput.safeParse({ ...input, ownerId: otherTurn }).success, false);
+  assert.equal(prepareProjectInput.safeParse({ name: "Orion" }).success, false);
+  assert.throws(() => prepareManagementDraft("prepareProject", input, otherTurn, ""));
+  const draft = prepareManagementDraft("prepareTasks", taskPreparation, otherTurn, "Review budget");
+  assert.equal(draft.kind, "create_tasks");
+  if (draft.kind !== "create_tasks") throw new Error("wrong kind");
+  assert.equal(draft.scopedProjectId, otherTurn);
+  assert.deepEqual(draft.items[0]!.evidence, { type: "user_message" });
+  assert.equal(draft.items[0]!.itemId, 1);
+  assert.equal(draft.items[0]!.fields.sourceNoteId, null);
+  const note = { ...retrievedNote, updatedAt: now.toISOString(), excerpt: "Review on 2026-03-01" };
+  const dated = { items: [{ ...retrievedPreparation.items[0], dueDate: "2026-03-01" }] };
+  assert.doesNotThrow(() => prepareManagementDraft("prepareTasks", dated, null, "extract", [note]));
+  assert.throws(() =>
+    prepareManagementDraft("prepareTasks", dated, null, "extract", [{ ...note, excerpt: "Later" }]),
+  );
+  assert.throws(() =>
+    prepareManagementDraft("prepareTasks", dated, otherTurn, "", [{ ...note, projectId: turnId }]),
+  );
+  assert.throws(() => prepareManagementDraft("prepareTasks", retrievedPreparation, null, ""));
+  for (const extra of [
+    { sourceNoteId: retrievedNote.id },
+    { itemId: 1 },
+    { projectId: otherTurn },
+    { ownerId: otherTurn },
+    { confirmed: true },
+  ]) {
+    assert.equal(
+      prepareTasksInput.safeParse({ items: [{ ...taskPreparation.items[0], ...extra }] }).success,
+      false,
+    );
+  }
+  for (const items of [
+    [],
+    Array.from({ length: 6 }, () => taskPreparation.items[0]),
+    [{ ...taskPreparation.items[0], evidence: { type: "retrieved_note", ordinal: 0 } }],
+  ])
+    assert.equal(prepareTasksInput.safeParse({ items }).success, false);
+});
+
+for (const project of [false, true])
+  test(`management direct task draft has no executor and persists only through the management finalizer (project=${project})`, async () => {
+    const f = fixture({ project, model: toolModel(taskPreparation, { name: "prepareTasks" }) });
+    const response = await f.post(request());
+    const outcome = await consumeChatResponse(
+      response,
+      payload,
+      () => {},
+      new AbortController().signal,
+    );
+    assert.equal(outcome.kind, "finish");
+    if (outcome.kind !== "finish") throw new Error("wrong outcome");
+    assert.equal(outcome.proposal, null);
+    assert.equal(outcome.managementProposal?.kind, "create_tasks");
+    assert.equal(outcome.managementProposal?.status, "proposed");
+    assert.equal(outcome.managementProposal?.scopedProject?.id ?? null, project ? otherTurn : null);
+    assert.equal(f.calls.filter((c) => c.operation === "management").length, 1);
+    assert.ok(
+      !f.calls.some((c) =>
+        ["proposal", "complete", "search", "owner-search"].includes(c.operation),
+      ),
+    );
+    assert.equal(f.provider.doStreamCalls.length, 1);
+    const saved = f.calls.find((c) => c.operation === "management")!.input as {
+      content: string;
+      draft: ManagementDraft;
+      sourceRefs: unknown;
+    };
+    assert.equal(saved.content, MANAGEMENT_PROPOSAL_MESSAGE);
+    assert.equal(saved.sourceRefs, null);
+    const tool = f.provider.doStreamCalls[0]!.tools!.find((t) => t.name === "prepareTasks")!;
+    assert.equal(tool.type, "function");
+    assert.deepEqual(Object.keys(tool.inputSchema.properties as object), ["items"]);
+  });
+
+test("management Main Chat project preparation is one schema-only action without implicit tasks", async () => {
+  const f = fixture({
+    model: toolModel({ name: "Orion", description: null }, { name: "prepareProject" }),
+  });
+  const parts = events(await (await f.post(request())).text());
+  assert.equal(parts.at(-1)!.event, "finish");
+  assert.equal(parts.at(-1)!.data.managementProposal.kind, "create_project");
+  assert.equal(parts.at(-1)!.data.proposal, null);
+  assert.equal(f.provider.doStreamCalls.length, 1);
+  const draft = (f.calls.find((c) => c.operation === "management")!.input as { draft: unknown })
+    .draft;
+  assert.deepEqual(draft, {
+    schemaVersion: 1,
+    kind: "create_project",
+    name: "Orion",
+    description: null,
+  });
+});
+
+for (const project of [false, true])
+  test(`management one-search second-step task extraction binds only server-held references (project=${project})`, async () => {
+    const f = fixture({
+      project,
+      model: retrievalModel(undefined, toolModel(retrievedPreparation, { name: "prepareTasks" })),
+      searchNotes: async () => ok([retrievedNote]),
+      searchOwnedNotes: async () => ok([{ ...retrievedNote, projectName: "Owned project" }]),
+    });
+    const parts = events(await (await f.post(request())).text());
+    assert.equal(parts.at(-1)!.event, "finish");
+    assert.equal(parts.at(-1)!.data.managementProposal.kind, "create_tasks");
+    const saved = f.calls.find((c) => c.operation === "management")!.input as {
+      draft: ManagementDraft;
+      sourceRefs: unknown;
+    };
+    if (saved.draft.kind !== "create_tasks") throw new Error("wrong kind");
+    assert.deepEqual(saved.draft.items[0]!.evidence, {
+      type: "retrieved_note",
+      noteId: retrievedNote.id,
+      projectId: otherTurn,
+      retrievedUpdatedAt: now.toISOString(),
+      excerptOnly: true,
+    });
+    assert.deepEqual(saved.sourceRefs, [
+      { noteId: retrievedNote.id, projectId: otherTurn, retrievedUpdatedAt: now.toISOString() },
+    ]);
+    assert.equal(saved.draft.items[0]!.fields.sourceNoteId, retrievedNote.id);
+    assert.equal(f.provider.doStreamCalls.length, 2);
+    assert.deepEqual(
+      f.provider.doStreamCalls[1]!.tools?.map((t) => t.name),
+      ["prepareTasks"],
+    );
+    assert.equal(f.provider.doStreamCalls[1]!.maxOutputTokens, MAX_OUTPUT_TOKENS - 5);
+    assert.equal(f.calls.filter((c) => c.operation.includes("search")).length, 1);
+  });
+
+for (const [label, input, options] of [
+  ["duplicate", taskPreparation, { count: 2 }],
+  ["malformed", taskPreparation, { raw: '{"items":' }],
+  ["missing fields", { items: [{ title: "Only title" }] }, {}],
+  ["invented identity", { items: [{ ...taskPreparation.items[0], itemId: 1 }] }, {}],
+  ["unretrieved source", retrievedPreparation, {}],
+  ["unsupported date", { items: [{ ...taskPreparation.items[0], dueDate: "2026-01-01" }] }, {}],
+  ["invalid calendar", { items: [{ ...taskPreparation.items[0], dueDate: "2026-02-30" }] }, {}],
+  ["truncated", taskPreparation, { reason: "length" as const }],
+  ["wrong finish", taskPreparation, { reason: "stop" as const }],
+] as const)
+  test(`management rejects ${label} without persisting a proposal`, async () => {
+    const f = fixture({ model: toolModel(input, { name: "prepareTasks", ...options }) });
+    const parts = events(await (await f.post(request())).text());
+    assert.equal(parts.at(-1)!.event, "error");
+    assert.ok(!f.calls.some((c) => ["management", "proposal", "complete"].includes(c.operation)));
+  });
+
+for (const name of ["prepareNote", "prepareProject", "searchNotes", "updateTask", "createTask"])
+  test(`management after search rejects ${name}, without a third inference`, async () => {
+    const f = fixture({
+      model: retrievalModel(
+        undefined,
+        toolModel(
+          name === "searchNotes"
+            ? { query: "budget" }
+            : name === "prepareNote"
+              ? noteDraft
+              : { name: "Orion", description: null },
+          { name },
+        ),
+      ),
+      searchOwnedNotes: async () => ok([{ ...retrievedNote, projectName: "Owned" }]),
+    });
+    const parts = events(await (await f.post(request())).text());
+    assert.equal(parts.at(-1)!.event, "error");
+    assert.ok(!f.calls.some((c) => ["management", "proposal", "complete"].includes(c.operation)));
+    assert.equal(f.provider.doStreamCalls.length, 2);
+    assert.equal(f.calls.filter((c) => c.operation.includes("search")).length, 1);
+  });
+
+test("management Project Chat cannot prepare projects, and failed finalization cannot emit finish", async () => {
+  const f = fixture({
+    project: true,
+    model: toolModel({ name: "Orion", description: null }, { name: "prepareProject" }),
+  });
+  assert.equal(events(await (await f.post(request())).text()).at(-1)!.event, "error");
+  assert.ok(!f.calls.some((c) => c.operation === "management"));
+  const uncertain = fixture({
+    model: toolModel(taskPreparation, { name: "prepareTasks" }),
+    chat: { completeManagementProposal: async () => denied() },
+  });
+  const parts = events(await (await uncertain.post(request())).text());
+  assert.equal(parts.at(-1)!.event, "error");
+  assert.equal(parts.at(-1)!.data.persistence, "unconfirmed");
+  assert.ok(
+    !uncertain.calls.some((c) => ["complete", "proposal", "fail", "stop"].includes(c.operation)),
+  );
+});
+
+for (const pair of [
+  ["prepareProject", "prepareTasks"],
+  ["prepareTasks", "searchNotes"],
+  ["prepareNote", "prepareTasks"],
+])
+  test(`management rejects mixed first-step ${pair.join("+")} calls`, async () => {
+    const provider = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateReadableStream({
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+          chunks: [
+            ...pair.map((name, i) => ({
+              type: "tool-call" as const,
+              toolCallId: `call-${i}`,
+              toolName: name,
+              input: JSON.stringify(
+                name === "prepareTasks"
+                  ? taskPreparation
+                  : name === "searchNotes"
+                    ? { query: "budget" }
+                    : name === "prepareNote"
+                      ? noteDraft
+                      : { name: "Orion", description: null },
+              ),
+            })),
+            finish("tool-calls"),
+          ],
+        }),
+      }),
+    });
+    const f = fixture({ model: provider });
+    const parts = events(await (await f.post(request())).text());
+    assert.equal(parts.at(-1)!.event, "error");
+    assert.ok(!f.calls.some((c) => ["management", "proposal", "complete"].includes(c.operation)));
+  });
+
+test("management second-step duplicate preparation and argument overflow cannot persist partial selections", async () => {
+  for (const [input, count] of [
+    [retrievedPreparation, 2],
+    [
+      {
+        items: Array.from({ length: 4 }, () => ({
+          ...taskPreparation.items[0],
+          description: "x".repeat(5000),
+        })),
+      },
+      1,
+    ],
+  ] as const) {
+    const f = fixture({
+      model: retrievalModel(undefined, toolModel(input, { name: "prepareTasks", count })),
+      searchOwnedNotes: async () => ok([{ ...retrievedNote, projectName: "Owned" }]),
+    });
+    const parts = events(await (await f.post(request())).text());
+    assert.equal(parts.at(-1)!.event, "error");
+    assert.ok(!f.calls.some((c) => ["management", "proposal", "complete"].includes(c.operation)));
+    assert.equal(f.provider.doStreamCalls.length, 2);
+  }
+});
+
+test("management real Groq adapter sends strict complete task schemas and accepts fragmented arguments with one mocked HTTP request", async () => {
+  let fetches = 0;
+  const f = fixture({
+    provider: (apiKey) =>
+      createGroq({
+        apiKey,
+        fetch: async (_url, init) => {
+          fetches++;
+          const body = JSON.parse(init!.body as string);
+          assert.equal(body.parallel_tool_calls, false);
+          assert.equal(body.model, CHAT_MODEL_ID);
+          const schema = body.tools.find(
+            (t: { function: { name: string } }) => t.function.name === "prepareTasks",
+          ).function.parameters;
+          assert.equal(schema.additionalProperties, false);
+          assert.deepEqual(schema.required, ["items"]);
+          assert.deepEqual(schema.properties.items.items.required, [
+            "title",
+            "description",
+            "status",
+            "priority",
+            "assignee",
+            "dueDate",
+            "evidence",
+          ]);
+          assert.equal(schema.properties.items.items.additionalProperties, false);
+          const input = JSON.stringify(taskPreparation);
+          const chunk = (delta: unknown, finish_reason: string | null = null) => ({
+            id: "completion",
+            created: 1,
+            model: CHAT_MODEL_ID,
+            choices: [{ index: 0, delta, finish_reason }],
+            ...(finish_reason
+              ? { x_groq: { usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } } }
+              : {}),
+          });
+          const chunks = [
+            chunk({
+              tool_calls: [
+                {
+                  index: 0,
+                  id: "management-call",
+                  type: "function",
+                  function: { name: "prepareTasks", arguments: input.slice(0, 45) },
+                },
+              ],
+            }),
+            chunk({ tool_calls: [{ index: 0, function: { arguments: input.slice(45) } }] }),
+            chunk({}, "tool_calls"),
+          ];
+          return new Response(
+            chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n",
+            { headers: { "content-type": "text/event-stream" } },
+          );
+        },
+      })(CHAT_MODEL_ID),
+  });
+  const parts = events(await (await f.post(request())).text());
+  assert.equal(parts.at(-1)!.event, "finish");
+  assert.equal(parts.at(-1)!.data.managementProposal.kind, "create_tasks");
+  assert.equal(fetches, 1);
+});
+
+test("management incomplete second-step input is rejected even when text and a stop finish look complete", async () => {
+  const f = fixture({
+    model: retrievalModel(
+      undefined,
+      toolModel(undefined, {
+        name: "prepareTasks",
+        fragmentOnly: true,
+        raw: '{"items":[',
+        text: "A provisional extraction",
+        reason: "stop",
+      }),
+    ),
+    searchOwnedNotes: async () => ok([{ ...retrievedNote, projectName: "Owned" }]),
+  });
+  const parts = events(await (await f.post(request())).text());
+  assert.equal(parts.at(-1)!.event, "error");
+  assert.ok(!f.calls.some((c) => ["management", "proposal", "complete"].includes(c.operation)));
 });

@@ -1,4 +1,20 @@
-import type { createConversation, getConversation, getNoteProposal } from "./actions";
+import type {
+  createConversation,
+  getConversation,
+  getNoteProposal,
+  getManagementProposal,
+} from "./actions";
+import type { confirmManagementProposal } from "../workspace/actions";
+import { managementProposalViewSchema, type ManagementProposalView } from "./management-contracts";
+import {
+  originalManagementEdit,
+  managementEditDirty,
+  managementPayload,
+  revokeManagement,
+  compatibleManagementReceipt,
+  type ManagementEdit,
+  type ManagementSave,
+} from "./management-client";
 import type { confirmNoteProposal } from "../workspace/actions";
 import {
   confirmNoteProposalInput,
@@ -12,6 +28,7 @@ import {
 import {
   consumeChatResponse,
   proposalMatchesMessage,
+  managementMatchesMessage,
   sourcesMatchMessage,
   safeIssue,
   TransportFailure,
@@ -58,6 +75,9 @@ export type SessionState = {
   proposalEdits: Record<string, ProposalEdit>;
   proposalSaves: Record<string, ProposalSave>;
   proposalReceipts: Record<string, ProposalView>;
+  managementEdits: Record<string, ManagementEdit>;
+  managementSaves: Record<string, ManagementSave>;
+  managementReceipts: Record<string, ManagementProposalView>;
 };
 export function shouldSend(event: {
   key: string;
@@ -163,16 +183,25 @@ const savedMessages = (view: ChatView) => {
   const ids = new Set<string>();
   return view.messages.map((m) => {
     const proposal = m.proposal ? proposalViewSchema.parse(m.proposal) : null;
+    const managementProposal = m.managementProposal
+      ? managementProposalViewSchema.parse(m.managementProposal)
+      : null;
     const sources = sourcesSchema.parse(m.sources ?? []);
     if (
-      !sourcesMatchMessage({ ...m, proposal, sources }, view.conversation.projectId) ||
+      !sourcesMatchMessage(
+        { ...m, proposal, managementProposal, sources },
+        view.conversation.projectId,
+      ) ||
+      !managementMatchesMessage(managementProposal, m, view.conversation.projectId) ||
+      (managementProposal && ids.has(managementProposal.id)) ||
       m.conversationId !== view.conversation.id ||
       !proposalMatchesMessage(proposal, m) ||
       (proposal && ids.has(proposal.id))
     )
       throw new TransportFailure("PROTOCOL");
     if (proposal) ids.add(proposal.id);
-    return { ...m, proposal, sources, persisted: true };
+    if (managementProposal) ids.add(managementProposal.id);
+    return { ...m, proposal, managementProposal, sources, persisted: true };
   });
 };
 
@@ -193,6 +222,8 @@ export class ChatSession {
       create: typeof createConversation;
       confirm?: typeof confirmNoteProposal;
       recoverProposal?: typeof getNoteProposal;
+      confirmManagement?: typeof confirmManagementProposal;
+      recoverManagement?: typeof getManagementProposal;
       read: typeof getConversation;
       fetch: typeof globalThis.fetch;
       uuid: () => string;
@@ -233,6 +264,13 @@ export class ChatSession {
       viewingOlder: false,
       proposalEdits: {},
       proposalSaves: {},
+      managementEdits: {},
+      managementSaves: {},
+      managementReceipts: Object.fromEntries(
+        initialMessages
+          .filter((m) => m.managementProposal?.status === "confirmed")
+          .map((m) => [m.managementProposal!.id, m.managementProposal!]),
+      ),
       proposalReceipts: Object.fromEntries(
         initialMessages
           .filter((m) => m.proposal?.status === "confirmed")
@@ -273,6 +311,9 @@ export class ChatSession {
       proposalEdits: {},
       proposalSaves: {},
       proposalReceipts: {},
+      managementEdits: {},
+      managementSaves: {},
+      managementReceipts: {},
     };
     for (const listener of this.listeners) listener();
   }
@@ -310,9 +351,56 @@ export class ChatSession {
       delete nextEdits[id];
       delete saves[id];
     }
+    const managementReceipts = { ...this.state.managementReceipts, ...update.managementReceipts };
+    const managementMessages =
+      update.messages ?? (update.managementReceipts ? this.state.messages : undefined);
+    if (managementMessages) {
+      update.messages = managementMessages.map((message) => {
+        const incoming = message.managementProposal;
+        if (incoming?.status === "confirmed" && !update.managementReceipts?.[incoming.id]) {
+          const old = managementReceipts[incoming.id];
+          if (old && !compatibleManagementReceipt(old, incoming))
+            throw new TransportFailure("PROTOCOL");
+          managementReceipts[incoming.id] = incoming;
+        }
+        const known = incoming
+          ? managementReceipts[incoming.id]
+          : Object.values(managementReceipts).find((p) => p.sourceMessageId === message.id);
+        if (!known) return message;
+        if (
+          !managementMatchesMessage(
+            known,
+            { ...message, status: "completed" },
+            this.state.conversation?.projectId ?? this.state.project?.id ?? null,
+          ) ||
+          message.proposal
+        )
+          throw new TransportFailure("PROTOCOL");
+        // A stale proposed snapshot must never unlock confirmation or revive links.
+        const projection =
+          update.managementReceipts?.[known.id] ??
+          (incoming?.status === "confirmed" ? incoming : revokeManagement(known));
+        managementReceipts[known.id] = projection;
+        return {
+          ...message,
+          managementProposal: projection,
+          status: "completed" as const,
+          persisted: true,
+        };
+      });
+    }
+    const managementEdits = { ...(update.managementEdits ?? this.state.managementEdits) };
+    const managementSaves = { ...(update.managementSaves ?? this.state.managementSaves) };
+    for (const id of Object.keys(managementReceipts)) {
+      delete managementEdits[id];
+      delete managementSaves[id];
+    }
     this.state = {
       ...this.state,
       ...update,
+      managementEdits,
+      managementSaves,
+      managementReceipts,
       proposalEdits: nextEdits,
       proposalSaves: saves,
       proposalReceipts: receipts,
@@ -340,6 +428,8 @@ export class ChatSession {
   }
   get hasProposalChanges() {
     return (
+      Object.keys(this.state.managementEdits).length > 0 ||
+      Object.values(this.state.managementSaves).some((save) => save.phase !== "error") ||
       Object.keys(this.state.proposalEdits).length > 0 ||
       Object.values(this.state.proposalSaves).some((save) => save.phase !== "error")
     );
@@ -451,6 +541,164 @@ export class ChatSession {
       this.saveState(id, { ...save, phase: "uncertain", issue: "UNAVAILABLE" });
     }
   }
+  editManagement(id: string, edit: ManagementEdit) {
+    if (
+      this.retired ||
+      this.state.managementReceipts[id] ||
+      (this.state.managementSaves[id] && this.state.managementSaves[id].phase !== "error")
+    )
+      return;
+    const proposal = this.state.messages.find(
+      (m) => m.persisted && m.managementProposal?.id === id,
+    )?.managementProposal;
+    if (!proposal || proposal.status !== "proposed" || edit.kind !== proposal.kind) return;
+    const edits = { ...this.state.managementEdits };
+    if (managementEditDirty(proposal, edit)) edits[id] = edit;
+    else delete edits[id];
+    this.set({ managementEdits: edits });
+  }
+  private managementSave(id: string, save: ManagementSave) {
+    if (!this.state.managementReceipts[id])
+      this.set({ managementSaves: { ...this.state.managementSaves, [id]: save } });
+  }
+  private acceptManagement(value: ManagementProposalView, expected: ManagementProposalView) {
+    if (
+      value.id !== expected.id ||
+      value.kind !== expected.kind ||
+      value.status !== "confirmed" ||
+      !value.receipt ||
+      !managementMatchesMessage(
+        value,
+        {
+          id: expected.sourceMessageId,
+          conversationId: expected.conversationId,
+          turnId: expected.turnId,
+          role: "assistant",
+          status: "completed",
+        },
+        this.state.conversation?.projectId ?? this.state.project?.id ?? null,
+      )
+    )
+      throw new TransportFailure("PROTOCOL");
+    const known = this.state.managementReceipts[value.id];
+    if (known && !compatibleManagementReceipt(known, value)) throw new TransportFailure("PROTOCOL");
+    this.sourceRead++; // Invalidate history reads begun before this acknowledgement.
+    this.set({ managementReceipts: { [value.id]: value } });
+  }
+  async confirmManagement(id: string) {
+    if (this.retired || this.state.managementReceipts[id] || this.state.needsReconcile) return;
+    const previous = this.state.managementSaves[id];
+    if (previous && previous.phase !== "retry" && previous.phase !== "error") return;
+    const proposal =
+      this.state.messages.find(
+        (m) => m.persisted && m.status === "completed" && m.managementProposal?.id === id,
+      )?.managementProposal ?? previous?.proposal;
+    if (!proposal || proposal.status !== "proposed") return;
+    const edit = this.state.managementEdits[id] ?? originalManagementEdit(proposal);
+    const payload =
+      previous?.phase === "retry" ? previous.payload : managementPayload(proposal, edit);
+    if (!payload) return;
+    const save: ManagementSave = {
+      phase: "saving",
+      proposal: revokeManagement(proposal),
+      payload,
+      issue: null,
+    };
+    const epoch = this.sourceEpoch,
+      read = this.sourceRead;
+    this.managementSave(id, save);
+    try {
+      if (!this.dependencies.confirmManagement) throw new TransportFailure("UNAVAILABLE");
+      const result = await this.dependencies.confirmManagement(payload);
+      if (this.retired || this.state.managementReceipts[id]) return;
+      if (!result.ok) {
+        if (
+          result.error.code === "UNAVAILABLE" ||
+          result.error.code === "CONFLICT" ||
+          result.error.code === "NOT_FOUND" ||
+          previous?.phase === "retry"
+        )
+          throw new TransportFailure(safeIssue(result.error.code));
+        this.managementSave(id, { ...save, phase: "error", issue: safeIssue(result.error.code) });
+        return;
+      }
+      if (typeof result.data.replayed !== "boolean") throw new TransportFailure("PROTOCOL");
+      const view = managementProposalViewSchema.parse(result.data.proposal);
+      this.acceptManagement(
+        epoch === this.sourceEpoch && read === this.sourceRead ? view : revokeManagement(view),
+        proposal,
+      );
+      if (epoch !== this.sourceEpoch || read + 1 !== this.sourceRead)
+        void this.recoverManagement(id);
+    } catch (error) {
+      if (this.retired || this.state.managementReceipts[id]) return;
+      this.managementSave(id, {
+        ...save,
+        phase: "uncertain",
+        issue: error instanceof TransportFailure ? error.code : "UNAVAILABLE",
+      });
+      await this.recoverManagement(id); // Read-only recovery, never automatic retry.
+    }
+  }
+  async recoverManagement(id: string) {
+    if (this.retired) return;
+    const save = this.state.managementSaves[id];
+    if (save?.phase === "saving" || save?.phase === "checking") return;
+    const expected =
+      save?.proposal ??
+      this.state.managementReceipts[id] ??
+      this.state.messages.find((m) => m.managementProposal?.id === id)?.managementProposal;
+    if (!expected) return;
+    const epoch = this.sourceEpoch,
+      read = ++this.sourceRead;
+    if (save) this.managementSave(id, { ...save, phase: "checking" });
+    try {
+      if (!this.dependencies.recoverManagement) throw new TransportFailure("UNAVAILABLE");
+      const result = await this.dependencies.recoverManagement({ proposalId: id });
+      if (this.retired) return;
+      if (!result.ok) throw new TransportFailure(safeIssue(result.error.code));
+      const view = managementProposalViewSchema.parse(result.data);
+      if (
+        view.id !== id ||
+        !managementMatchesMessage(
+          view,
+          {
+            id: expected.sourceMessageId,
+            conversationId: expected.conversationId,
+            turnId: expected.turnId,
+            role: "assistant",
+            status: "completed",
+          },
+          this.state.conversation?.projectId ?? this.state.project?.id ?? null,
+        )
+      )
+        throw new TransportFailure("PROTOCOL");
+      const fresh = epoch === this.sourceEpoch && read === this.sourceRead;
+      if (view.status === "confirmed") {
+        // A superseded lookup cannot restore availability, even on a confirmed receipt.
+        if (fresh) this.acceptManagement(view, expected);
+        else if (!this.state.managementReceipts[id])
+          this.acceptManagement(revokeManagement(view), expected);
+      } else if (save && !this.state.managementReceipts[id])
+        this.managementSave(id, {
+          ...save,
+          phase: fresh ? (save.phase === "error" ? "error" : "retry") : "uncertain",
+          issue: save.issue,
+        });
+    } catch (error) {
+      if (this.retired) return;
+      if (this.state.managementReceipts[id])
+        this.set({
+          managementReceipts: { [id]: revokeManagement(this.state.managementReceipts[id]!) },
+        });
+      else if (save)
+        this.managementSave(id, {
+          ...save,
+          phase: "uncertain",
+          issue: error instanceof TransportFailure ? error.code : "UNAVAILABLE",
+        });
+    }
+  }
   get busy() {
     return this.state.phase !== "idle";
   }
@@ -481,7 +729,19 @@ export class ChatSession {
     this.sourceRead++;
     this.sourceEpoch++;
     this.set({
-      messages: this.state.messages.map((message) => ({ ...message, sources: [] })),
+      messages: this.state.messages.map((message) => ({
+        ...message,
+        sources: [],
+        managementProposal: message.managementProposal
+          ? revokeManagement(message.managementProposal)
+          : null,
+      })),
+      managementReceipts: Object.fromEntries(
+        Object.entries(this.state.managementReceipts).map(([id, proposal]) => [
+          id,
+          revokeManagement(proposal),
+        ]),
+      ),
       needsReconcile: true,
     });
   }
@@ -497,7 +757,7 @@ export class ChatSession {
     try {
       await this.reconcile(older);
       if (!older && discardProposalEdits && !this.state.needsReconcile)
-        this.set({ proposalEdits: {} });
+        this.set({ proposalEdits: {}, managementEdits: {} });
     } finally {
       this.set({ phase: "idle" });
       // A cached-session return may have invalidated an outstanding older-page
@@ -509,8 +769,13 @@ export class ChatSession {
     if (this.retired || this.busy) return;
     if (initial.ok && initial.data.conversation.id !== this.conversationId) return;
     if (
-      this.state.messages.some((message) => message.sources?.length) ||
-      (initial.ok && initial.data.messages.some((message) => message.sources?.length))
+      this.state.messages.some(
+        (message) => message.sources?.length || message.managementProposal,
+      ) ||
+      (initial.ok &&
+        initial.data.messages.some(
+          (message) => message.sources?.length || message.managementProposal,
+        ))
     ) {
       // A route snapshot has no authorization freshness marker. Never let it
       // restore a link after a newer action read has revoked/cleared that source.
@@ -556,7 +821,19 @@ export class ChatSession {
       if (read !== this.sourceRead) return;
       if (!result.ok) {
         this.set({
-          messages: this.state.messages.map((message) => ({ ...message, sources: [] })),
+          messages: this.state.messages.map((message) => ({
+            ...message,
+            sources: [],
+            managementProposal: message.managementProposal
+              ? revokeManagement(message.managementProposal)
+              : null,
+          })),
+          managementReceipts: Object.fromEntries(
+            Object.entries(this.state.managementReceipts).map(([id, proposal]) => [
+              id,
+              revokeManagement(proposal),
+            ]),
+          ),
           issue: result.error.code,
           needsReconcile: true,
         });
@@ -631,7 +908,19 @@ export class ChatSession {
     } catch {
       if (read !== this.sourceRead) return;
       this.set({
-        messages: this.state.messages.map((message) => ({ ...message, sources: [] })),
+        messages: this.state.messages.map((message) => ({
+          ...message,
+          sources: [],
+          managementProposal: message.managementProposal
+            ? revokeManagement(message.managementProposal)
+            : null,
+        })),
+        managementReceipts: Object.fromEntries(
+          Object.entries(this.state.managementReceipts).map(([id, proposal]) => [
+            id,
+            revokeManagement(proposal),
+          ]),
+        ),
         issue: "UNAVAILABLE",
         needsReconcile: true,
       });
@@ -750,7 +1039,13 @@ export class ChatSession {
               status: "completed",
               sources: outcome.sources,
               proposal: outcome.proposal,
+              managementProposal: outcome.managementProposal,
             },
+            this.state.conversation?.projectId ?? this.state.project?.id ?? null,
+          ) ||
+          !managementMatchesMessage(
+            outcome.managementProposal,
+            { ...attempt, id: outcome.messageId, role: "assistant", status: "completed" },
             this.state.conversation?.projectId ?? this.state.project?.id ?? null,
           ) ||
           this.state.messages.some(
@@ -760,7 +1055,6 @@ export class ChatSession {
           )
         )
           throw new TransportFailure("PROTOCOL");
-        confirmed = true;
         this.set({
           attempt: null,
           pendingTurn: null,
@@ -773,6 +1067,12 @@ export class ChatSession {
                   id: m.role === "assistant" ? outcome.messageId : m.id,
                   status: "completed",
                   proposal: m.role === "assistant" ? outcome.proposal : null,
+                  managementProposal:
+                    m.role === "assistant" && outcome.managementProposal
+                      ? sourceEpoch === this.sourceEpoch
+                        ? outcome.managementProposal
+                        : revokeManagement(outcome.managementProposal)
+                      : null,
                   sources:
                     m.role === "assistant" && sourceEpoch === this.sourceEpoch
                       ? outcome.sources
@@ -781,22 +1081,32 @@ export class ChatSession {
               : m,
           ),
         });
+        confirmed = true;
       } else if (outcome.kind === "replay") {
         if (
           !sourcesMatchMessage(
+            outcome.assistant,
+            this.state.conversation?.projectId ?? this.state.project?.id ?? null,
+          ) ||
+          !managementMatchesMessage(
+            outcome.assistant.managementProposal,
             outcome.assistant,
             this.state.conversation?.projectId ?? this.state.project?.id ?? null,
           )
         )
           throw new TransportFailure("PROTOCOL");
         const terminal = outcome.assistant.status !== "pending";
-        confirmed = terminal;
         this.set({
           messages: mergeMessages(
             this.state.messages,
             [outcome.user, outcome.assistant].map((m) => ({
               ...m,
               sources: sourceEpoch === this.sourceEpoch ? (m.sources ?? []) : [],
+              managementProposal: m.managementProposal
+                ? sourceEpoch === this.sourceEpoch
+                  ? m.managementProposal
+                  : revokeManagement(m.managementProposal)
+                : null,
               persisted: true,
             })),
           ),
@@ -804,6 +1114,7 @@ export class ChatSession {
           attempt: terminal ? null : attempt,
           needsReconcile: false,
         });
+        confirmed = terminal;
       } else {
         this.set({ issue: safeIssue(outcome.code) });
         if (outcome.kind === "error" && outcome.confirmed && outcome.status) {

@@ -16,7 +16,8 @@ import {
 } from "react";
 
 import * as actions from "./actions";
-import { confirmNoteProposal } from "../workspace/actions";
+import { confirmNoteProposal, confirmManagementProposal } from "../workspace/actions";
+import { ManagementPreview } from "./management-preview";
 import {
   ChatSession,
   ChatSessions,
@@ -177,6 +178,8 @@ export default function ChatScreen({
           create: actions.createConversation,
           confirm: confirmNoteProposal,
           recoverProposal: actions.getNoteProposal,
+          confirmManagement: confirmManagementProposal,
+          recoverManagement: actions.getManagementProposal,
           read: compact
             ? async (input) => {
                 const result = await actions.getConversation(input);
@@ -530,6 +533,31 @@ export default function ChatScreen({
                   change={(patch) => session.editProposal(message.proposal!.id, patch)}
                 />
               ) : null}
+              {previousSession.current === session &&
+              message.persisted &&
+              message.status === "completed" &&
+              message.managementProposal ? (
+                <ManagementPreview
+                  key={message.managementProposal.id}
+                  proposal={message.managementProposal}
+                  loadProjects={actions.listProposalProjects}
+                  sources={message.sources}
+                  blocked={state.needsReconcile}
+                  edit={state.managementEdits[message.managementProposal.id]}
+                  saveState={state.managementSaves[message.managementProposal.id]}
+                  change={(edit) => session.editManagement(message.managementProposal!.id, edit)}
+                  save={() =>
+                    startTransition(async () =>
+                      session.confirmManagement(message.managementProposal!.id),
+                    )
+                  }
+                  recover={() =>
+                    startTransition(async () =>
+                      session.recoverManagement(message.managementProposal!.id),
+                    )
+                  }
+                />
+              ) : null}
             </article>
           ))}
         </div>
@@ -585,7 +613,7 @@ export default function ChatScreen({
                   if (
                     session.hasProposalChanges &&
                     !window.confirm(
-                      "Reload the original drafts? Your local note edits will be lost.",
+                      "Reload the original drafts? Your local preview edits will be lost. Uncertain submitted approvals stay locked.",
                     )
                   )
                     return;
@@ -669,7 +697,7 @@ export default function ChatScreen({
           <p className="chat-help mt-[8px] text-[12px] text-muted-foreground" id="chat-input-help">
             {compact
               ? "Drafts stay here. Replies continue when closed."
-              : "Enter to send · Shift+Enter for a new line. Ask to prepare a note draft, then review and explicitly save it. Search covers authorized notes in this chat’s scope."}
+              : "Enter to send · Shift+Enter for a new line. Prepare note, project or task drafts, then review and confirm explicitly. Project drafts are Main Chat only; search covers authorized notes in this chat’s scope."}
           </p>
         </div>
       </div>
