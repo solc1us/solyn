@@ -266,9 +266,91 @@ test("task model output contains ordinals rather than raw identity and bounds lo
   );
 });
 
+test("optional search filters default only to no restriction and never override fixed scope", () => {
+  const parsed = searchTasksToolInput.parse({ status: "pending" });
+  const query = taskSearchQuery(parsed, projectId, "");
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(query).filter(([, value]) => value !== undefined)),
+    { projectId, status: "pending" },
+  );
+  assert.equal(taskSearchQuery(searchTasksToolInput.parse({}), null, "").priority, undefined);
+  assert.equal(
+    taskSearchQuery(searchTasksToolInput.parse({ priority: "none" }), null, "").priority,
+    null,
+  );
+  assert.equal(
+    taskSearchQuery(searchTasksToolInput.parse({ priority: "high" }), null, "").priority,
+    "high",
+  );
+  for (const bad of [
+    { ownerId: "other" },
+    { projectId },
+    { priority: null },
+    { dueDateFrom: "2026-02-30" },
+    { extra: true },
+  ])
+    assert.equal(searchTasksToolInput.safeParse(bad).success, false);
+});
+
+const providerUpdate = (changes: Record<string, unknown>) => ({
+  ordinal: 1,
+  fieldsToChange: Object.keys(changes),
+  changes: {
+    title: null,
+    description: null,
+    status: null,
+    priority: null,
+    assignee: null,
+    dueDate: null,
+    ...changes,
+  },
+});
+
+test("provider field selection normalizes to partial changes, allows explicit clears and ignores every unselected value", () => {
+  const selected = providerUpdate({ status: "done" });
+  const payload = {
+    ...selected,
+    changes: { ...selected.changes, title: "Ignored title", dueDate: "2026-03-01" },
+  }; // unselected values cannot mutate state or require new date evidence
+  const draft = prepareTaskUpdate(payload, retrieval(), "done");
+  assert.equal(draft.kind, "update_task");
+  if (draft.kind === "update_task") assert.deepEqual(draft.changes, { status: "done" });
+  const cleared = prepareTaskUpdate(
+    providerUpdate({ description: null, priority: null, assignee: null, dueDate: null }),
+    retrieval(),
+    "clear",
+  );
+  if (cleared.kind === "update_task")
+    assert.deepEqual(cleared.changes, {
+      description: null,
+      priority: null,
+      assignee: null,
+      dueDate: null,
+    });
+  for (const fieldsToChange of [
+    [],
+    ["status", "status"],
+    ["sourceNoteId"],
+    ["title"],
+    ["status", "projectId"],
+  ]) {
+    const bad = { ...providerUpdate({ status: "done" }), fieldsToChange };
+    assert.equal(prepareTaskUpdateInput.safeParse(bad).success, false);
+  }
+  assert.equal(prepareTaskUpdateInput.safeParse(providerUpdate({ status: null })).success, false);
+  assert.equal(
+    prepareTaskUpdateInput.safeParse({
+      ordinal: 1,
+      fieldsToChange: ["status"],
+      changes: { status: "done" },
+    }).success,
+    false,
+  );
+});
+
 test("update preparation derives current identity/version from a unique authorized ordinal and enforces partial changes", () => {
   const draft = prepareTaskUpdate(
-    { ordinal: 1, changes: { status: "done", description: null } },
+    providerUpdate({ status: "done", description: null }),
     retrieval(),
     "Mark done",
   );
@@ -288,13 +370,13 @@ test("update preparation derives current identity/version from a unique authoriz
     { completedAt: "now" },
     { title: null },
   ])
-    assert.equal(prepareTaskUpdateInput.safeParse({ ordinal: 1, changes }).success, false);
+    assert.equal(prepareTaskUpdateInput.safeParse(providerUpdate(changes)).success, false);
   assert.throws(() =>
-    prepareTaskUpdate({ ordinal: 2, changes: { status: "done" } }, retrieval(), ""),
+    prepareTaskUpdate({ ...providerUpdate({ status: "done" }), ordinal: 2 }, retrieval(), ""),
   );
   assert.throws(() =>
     prepareTaskUpdate(
-      { ordinal: 1, expectedVersion: 5, changes: { status: "done" } },
+      { ...providerUpdate({ status: "done" }), expectedVersion: 5 },
       retrieval(),
       "",
     ),
@@ -306,15 +388,11 @@ test("update preparation derives current identity/version from a unique authoriz
     { ...retrieval(), items: [] },
     { ...retrieval(), items: [task, { ...task, id: projectId }] },
   ])
-    assert.throws(() => prepareTaskUpdate({ ordinal: 1, changes: { status: "done" } }, data, ""));
+    assert.throws(() => prepareTaskUpdate(providerUpdate({ status: "done" }), data, ""));
   assert.throws(() =>
-    prepareTaskUpdate({ ordinal: 1, changes: { dueDate: "2026-03-01" } }, retrieval(), "tomorrow"),
+    prepareTaskUpdate(providerUpdate({ dueDate: "2026-03-01" }), retrieval(), "tomorrow"),
   );
   assert.doesNotThrow(() =>
-    prepareTaskUpdate(
-      { ordinal: 1, changes: { dueDate: "2026-03-01" } },
-      retrieval(),
-      "Due 2026-03-01",
-    ),
+    prepareTaskUpdate(providerUpdate({ dueDate: "2026-03-01" }), retrieval(), "Due 2026-03-01"),
   );
 });

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { safeAIDiagnostic } from "./ai-error-log";
 import { test } from "node:test";
 
 import { createGroq } from "@ai-sdk/groq";
@@ -149,6 +150,7 @@ function fixture(
     searchNotes?: Dependencies["workspace"]["searchNotes"];
     searchOwnedNotes?: Dependencies["workspace"]["searchOwnedNotes"];
     searchTasks?: Dependencies["workspace"]["searchTasks"];
+    logError?: Dependencies["logError"];
   } = {},
 ) {
   const calls: { operation: string; input: unknown }[] = [];
@@ -301,6 +303,7 @@ function fixture(
     },
     origin,
     timeoutMs: options.timeoutMs,
+    logError: options.logError ?? (() => {}),
     getSession: async () => {
       sessionCalls++;
       return options.session === false ? null : { user: { id: "owner-from-session" } };
@@ -2420,7 +2423,20 @@ const foundTask = {
   version: 3,
 };
 const foundTasks = { items: [foundTask], truncated: false, ambiguousProject: false };
-const updatePreparation = { ordinal: 1, changes: { status: "done" } };
+const updatePayload = (changes: Record<string, unknown>) => ({
+  ordinal: 1,
+  fieldsToChange: Object.keys(changes),
+  changes: {
+    title: null,
+    description: null,
+    status: null,
+    priority: null,
+    assignee: null,
+    dueDate: null,
+    ...changes,
+  },
+});
+const updatePreparation = updatePayload({ status: "done" });
 function taskRetrievalModel(
   second = model("The stored task is todo; priority and deadline are unspecified."),
 ) {
@@ -2494,8 +2510,8 @@ for (const [label, data, prep] of [
   ["empty", { ...foundTasks, items: [] }, updatePreparation],
   ["forged ordinal", foundTasks, { ...updatePreparation, ordinal: 2 }],
   ["forged version", foundTasks, { ...updatePreparation, expectedVersion: 4 }],
-  ["substituted source", foundTasks, { ordinal: 1, changes: { sourceNoteId: assistant.id } }],
-  ["unsupported relative deadline", foundTasks, { ordinal: 1, changes: { dueDate: "2026-03-01" } }],
+  ["substituted source", foundTasks, updatePayload({ sourceNoteId: assistant.id })],
+  ["unsupported relative deadline", foundTasks, updatePayload({ dueDate: "2026-03-01" })],
 ] as const)
   test(`search-to-update rejects ${label} without proposal persistence`, async () => {
     const f = fixture({
@@ -2565,4 +2581,301 @@ test("task search errors, corrupt summaries, scope mismatch and model-invented d
     assert.equal(events(await (await f.post(request())).text()).at(-1)!.event, "error");
     assert.ok(!f.calls.some((c) => c.operation === "task-search"));
   }
+});
+
+function assertStrictObjects(value: unknown) {
+  if (!value || typeof value !== "object") return;
+  const schema = value as Record<string, unknown>;
+  if (schema.type === "object") {
+    assert.equal(schema.additionalProperties, false);
+    assert.deepEqual(
+      [...((schema.required as string[]) ?? [])].sort(),
+      Object.keys((schema.properties as object) ?? {}).sort(),
+    );
+  }
+  for (const child of Object.values(schema)) assertStrictObjects(child);
+}
+function groqReply(name?: string, input?: unknown) {
+  const chunks = [
+    {
+      choices: [
+        {
+          index: 0,
+          delta: name
+            ? {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: `call_${name}_offline`,
+                    type: "function",
+                    function: { name, arguments: JSON.stringify(input) },
+                  },
+                ],
+              }
+            : { content: "Current task facts retrieved." },
+          finish_reason: null,
+        },
+      ],
+    },
+    {
+      choices: [{ index: 0, delta: {}, finish_reason: name ? "tool_calls" : "stop" }],
+      x_groq: { usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } },
+    },
+  ].map((chunk) => ({ id: "offline", created: 1, model: CHAT_MODEL_ID, ...chunk }));
+  return new Response(
+    chunks.map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n",
+    { headers: { "content-type": "text/event-stream" } },
+  );
+}
+for (const project of [false, true])
+  for (const update of [false, true])
+    test(`real Groq outbound schemas support omitted search filters and search-to-${update ? "update" : "text"} (project=${project})`, async () => {
+      let fetches = 0;
+      const f = fixture({
+        project,
+        searchTasks: async () => ok(foundTasks),
+        provider: (apiKey) =>
+          createGroq({
+            apiKey,
+            fetch: async (_url, init) => {
+              fetches++;
+              const body = JSON.parse(init!.body as string);
+              assert.equal(body.parallel_tool_calls, false);
+              assert.equal(body.max_tokens, MAX_OUTPUT_TOKENS - (fetches === 1 ? 0 : 5));
+              for (const t of body.tools ?? [])
+                if (t.function.strict) assertStrictObjects(t.function.parameters);
+              if (fetches === 1) {
+                const search = body.tools.find(
+                  (t: { function: { name: string } }) => t.function.name === "searchTasks",
+                ).function;
+                assert.equal(search.strict, false);
+                assert.equal(search.parameters.additionalProperties, false);
+                assert.deepEqual(search.parameters.required ?? [], []);
+                assert.ok(
+                  !body.tools.some(
+                    (t: { function: { name: string } }) => t.function.name === "prepareTaskUpdate",
+                  ),
+                );
+                return groqReply("searchTasks", { status: "pending" });
+              }
+              assert.equal(fetches, 2);
+              assert.equal(body.tools.length, 1);
+              const tool = body.tools[0].function;
+              assert.equal(tool.name, "prepareTaskUpdate");
+              assert.equal(tool.strict, true);
+              assert.deepEqual(tool.parameters.required, ["ordinal", "fieldsToChange", "changes"]);
+              assert.deepEqual(
+                [...tool.parameters.properties.changes.required].sort(),
+                ["title", "description", "status", "priority", "assignee", "dueDate"].sort(),
+              );
+              return update
+                ? groqReply("prepareTaskUpdate", updatePayload({ status: "done", priority: null }))
+                : groqReply();
+            },
+          })(CHAT_MODEL_ID),
+      });
+      const parts = events(await (await f.post(request())).text());
+      assert.equal(parts.at(-1)!.event, "finish");
+      assert.equal(fetches, 2);
+      const query = f.calls.find((c) => c.operation === "task-search")!.input as Record<
+        string,
+        unknown
+      >;
+      assert.equal(query.projectId, project ? otherTurn : undefined);
+      assert.equal(query.status, "pending");
+      assert.equal(query.priority, undefined);
+      assert.equal(query.title, undefined);
+      const completed = f.calls.find((c) => c.operation === (update ? "management" : "complete"))!
+        .input as { draft?: ManagementDraft };
+      if (update) {
+        assert.equal(completed.draft?.kind, "update_task");
+        if (completed.draft?.kind === "update_task")
+          assert.deepEqual(completed.draft.changes, { status: "done", priority: null });
+      }
+    });
+for (const [label, data] of [
+  ["empty", { ...foundTasks, items: [] }],
+  ["multiple", { ...foundTasks, items: [foundTask, { ...foundTask, id: assistant.id }] }],
+  ["ambiguous", { ...foundTasks, ambiguousProject: true }],
+  ["truncated", { ...foundTasks, truncated: true }],
+] as const)
+  test(`real Groq search ${label} allows clarification with no second-step update tool`, async () => {
+    let fetches = 0;
+    const f = fixture({
+      searchTasks: async () => ok({ ...data, items: [...data.items] }),
+      provider: (apiKey) =>
+        createGroq({
+          apiKey,
+          fetch: async (_url, init) => {
+            fetches++;
+            const body = JSON.parse(init!.body as string);
+            if (fetches === 1) return groqReply("searchTasks", {});
+            assert.equal(fetches, 2);
+            assert.ok(!body.tools?.length);
+            return groqReply();
+          },
+        })(CHAT_MODEL_ID),
+    });
+    assert.equal(events(await (await f.post(request())).text()).at(-1)!.event, "finish");
+    assert.equal(fetches, 2);
+    assert.ok(!f.calls.some((c) => c.operation === "management"));
+  });
+
+for (const arguments_ of [
+  { projectName: "Other project" },
+  { ownerId: "foreign" },
+  { projectId: otherTurn },
+])
+  test(`real Groq task search cannot override scope or pass unknown keys: ${Object.keys(arguments_)[0]}`, async () => {
+    let fetches = 0;
+    const f = fixture({
+      project: true,
+      provider: (apiKey) =>
+        createGroq({
+          apiKey,
+          fetch: async () => {
+            fetches++;
+            return groqReply("searchTasks", arguments_);
+          },
+        })(CHAT_MODEL_ID),
+    });
+    assert.equal(events(await (await f.post(request())).text()).at(-1)!.event, "error");
+    assert.equal(fetches, 1);
+    assert.ok(!f.calls.some((call) => call.operation === "task-search"));
+  });
+
+test("real Groq schema rejection logs one sanitized second-step diagnostic and preserves safe errors", async () => {
+  let fetches = 0;
+  const logs: ReturnType<typeof safeAIDiagnostic>[] = [];
+  const f = fixture({
+    searchTasks: async () => ok(foundTasks),
+    logError: (context, error) => {
+      logs.push(safeAIDiagnostic(context, error));
+    },
+    provider: (apiKey) =>
+      createGroq({
+        apiKey,
+        fetch: async () => {
+          if (++fetches === 1) return groqReply("searchTasks", {});
+          return Response.json(
+            {
+              error: {
+                type: "invalid_request_error",
+                code: "tool_use_failed",
+                message:
+                  "invalid JSON schema for tool prepareTaskUpdate, /properties/changes/required: required is required. Missing required properties: assignee, description, dueDate, priority, status, title. PRIVATE_PROMPT_SECRET",
+                failed_generation: "PRIVATE_PROMPT_SECRET",
+              },
+            },
+            { status: 400, headers: { "x-request-id": "req_0123456789abcdef" } },
+          );
+        },
+      })(CHAT_MODEL_ID),
+  });
+  const parts = events(await (await f.post(request())).text());
+  assert.equal(parts.at(-1)!.data.code, "PROVIDER_REJECTED");
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0]!.category, "provider_schema_rejection");
+  assert.equal(logs[0]!.step, 2);
+  assert.equal(logs[0]!.tool, "prepareTaskUpdate");
+  assert.equal(logs[0]!.httpStatus, 400);
+  assert.equal(logs[0]!.requestId, "req_0123456789abcdef");
+  assert.equal(logs[0]!.persistence, "confirmed");
+  assert.doesNotMatch(
+    JSON.stringify(logs),
+    /PRIVATE_PROMPT_SECRET|Question|owner-from-session|fake-key/,
+  );
+});
+
+test("real Groq generated-argument rejection logs once without response bodies or failed_generation", async () => {
+  const logs: ReturnType<typeof safeAIDiagnostic>[] = [];
+  let fetches = 0;
+  const f = fixture({
+    logError: (context, error) => {
+      logs.push(safeAIDiagnostic(context, error));
+    },
+    provider: (apiKey) =>
+      createGroq({
+        apiKey,
+        fetch: async () => {
+          fetches++;
+          return Response.json(
+            {
+              error: {
+                type: "invalid_request_error",
+                code: "tool_use_failed",
+                message:
+                  "Tool call validation failed: parameters for tool searchTasks did not match schema. Missing properties: title, priority, dueDateFrom, dueDateTo, overdueBefore. PRIVATE_ARGUMENTS",
+                failed_generation: "PRIVATE_ARGUMENTS",
+              },
+            },
+            { status: 400 },
+          );
+        },
+      })(CHAT_MODEL_ID),
+  });
+  const parts = events(await (await f.post(request())).text());
+  assert.equal(parts.at(-1)!.data.code, "PROVIDER_REJECTED");
+  assert.equal(fetches, 1);
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0]!.category, "generated_argument_validation");
+  assert.equal(logs[0]!.tool, "searchTasks");
+  assert.equal(logs[0]!.step, 1);
+  assert.doesNotMatch(JSON.stringify(logs), /PRIVATE_ARGUMENTS|failed_generation/);
+});
+
+test("one terminal diagnostic distinguishes grammar, retrieval and finalization failures; throwing loggers cannot break responses", async () => {
+  for (const [setup, category] of [
+    [
+      {
+        model: taskRetrievalModel(toolModel(taskQuery, { name: "searchTasks" })),
+        searchTasks: async () => ok(foundTasks),
+      },
+      "grammar_rejection",
+    ],
+    [{ model: taskRetrievalModel(), searchTasks: async () => denied() }, "retrieval_failure"],
+    [{ chat: { completeResponse: async () => denied() } }, "persistence_failure"],
+    [{ model: stalledModel(), timeoutMs: 25 }, "timeout"],
+  ] as const) {
+    const logs: ReturnType<typeof safeAIDiagnostic>[] = [];
+    const f = fixture({
+      ...setup,
+      logError: (context, error) => {
+        logs.push(safeAIDiagnostic(context, error));
+      },
+    });
+    assert.equal(events(await (await f.post(request())).text()).at(-1)!.event, "error");
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0]!.category, category);
+  }
+  const f = fixture({
+    model: taskRetrievalModel(),
+    searchTasks: async () => denied(),
+    logError: () => {
+      throw new Error("logger failed");
+    },
+  });
+  assert.equal(events(await (await f.post(request())).text()).at(-1)!.event, "error");
+  assert.equal(f.calls.filter((c) => c.operation === "fail").length, 1);
+  const asyncLogger = fixture({
+    chat: { completeResponse: async () => denied() },
+    logError: async () => {
+      throw new Error("logger rejected");
+    },
+  });
+  assert.equal(
+    events(await (await asyncLogger.post(request())).text()).at(-1)!.data.code,
+    "PERSISTENCE_FAILED",
+  );
+});
+
+test("preparation instructions ask for direct substantive previews and per-item evidence, without an extra inference", async () => {
+  const f = fixture();
+  await (await f.post(request())).text();
+  const instructions = JSON.stringify(f.provider.doStreamCalls[0]!.prompt);
+  assert.match(instructions, /do not ask for redundant conversational confirmation/);
+  assert.match(instructions, /Evaluate each task independently/);
+  assert.match(instructions, /unless the evidence explicitly applies to both/);
+  assert.match(instructions, /Use todo if status is unspecified and null for unknown/);
+  assert.equal(f.provider.doStreamCalls.length, 1);
 });
