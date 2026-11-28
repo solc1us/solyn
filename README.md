@@ -34,6 +34,18 @@ Open [localhost:3001](http://localhost:3001). `bun run dev` starts all workspace
 
 **Database setup is not automatic.** Obtain PM approval for the exact target and action before migrations, seeding, `db:push` or database writes. Review [migration history and baseline warnings](packages/db/src/migrations/README.md); never blindly apply the initial auth baseline. `bun run db:generate` generates migration artifacts, not database client/types, and does not apply them.
 
+### Local database CLI certificate setup
+
+If your approved database connection needs an extra CA, obtain the trusted PEM bundle through the approved channel and keep it outside version control. In ignored `apps/web/.env.local`, add the absolute path (forward slashes work on Windows):
+
+```dotenv
+NODE_EXTRA_CA_CERTS="/absolute/path/to/trusted-ca-bundle.pem"
+```
+
+Use your actual local path; do not commit it or the certificate. The setting is optional when Node's default trust store suffices. `packages/db/.env.schema` imports it alongside database configuration. Both `db:migrate` and the database workspace's `db:migrate:deploy` now use `varlock run -- drizzle-kit migrate`: Varlock injects resolved environment variables **before** launching Drizzle Kit's Node process. Loading the setting only inside `drizzle.config.ts` is too late for Node's startup CA loading. No terminal export is needed.
+
+After obtaining separate PM approval for the exact migration and target, run `bun run db:migrate` from the repository root (or `bun run db:migrate` / `bun run db:migrate:deploy` inside `packages/db`). Existing root forwarding, Drizzle config auto-loading, development commands and other Drizzle commands are unchanged. Ambient environment overrides still take precedence over local files; remove a stale terminal override if necessary. This does not approve running migrations, change deployment configuration or disable TLS verification. Bun automatic environment loading remains disabled.
+
 ## Local feedback and PR verification
 
 During implementation, run the affected test file and related regression tests, for example:
