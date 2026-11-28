@@ -68,6 +68,27 @@ Lists default to 50 rows, maximum 100, with offset 0–100,000. Ordering is `upd
 - Ordering across projects is title match first, then `notes.updatedAt DESC, notes.id DESC`. Pagination is deterministic for an unchanged dataset, not a snapshot across edits. SQL enforces row/excerpt bounds; a limit bounds returned rows, not all search work.
 - Existing owner/project B-tree indexes support scope/join filtering, but do not accelerate arbitrary leading-wildcard text matching. No migration/index change is required for this MVP baseline; live plans/performance and persisted cross-account isolation are not established by the scripted tests. P4.6B now integrates this read into Main Chat and authorizes cross-project source projections; fixed-project chats retain their original scope.
 
+## P5.2 tasks — backend only, migration not applied
+
+PM approved structured task persistence and local migration generation for Phase 5 Project Management Assistant. This extends the existing authenticated workspace service and thin Server Actions; no task UI, routes, navigation, AI tools or prompts are added.
+
+- `createTask({ projectId, title, description?, status?, priority?, assignee?, dueDate?, sourceNoteId? })`: defaults status to `todo`, nullable fields to null and version to 1. Initial `done` sets `completedAt`.
+- `getTask({ taskId })`: full task DTO, no account metadata.
+- `listTasks({ projectId, status?, priority?, dueDateFrom?, dueDateTo?, limit?, offset? })`: requires an owned project; foreign/missing projects share NOT_FOUND.
+- `listOwnedTasks({ projectId?, status?, priority?, dueDateFrom?, dueDateTo?, limit?, offset? } = {})`: joins only session-owned projects. Foreign/missing optional project filters both return an empty collection.
+- `updateTask({ taskId, expectedVersion, title?, description?, status?, priority?, assignee?, dueDate?, sourceNoteId? })`: requires a change field; project assignment is immutable. Omission preserves a value; explicit null clears a nullable field.
+- `deleteTask({ taskId, expectedVersion })`: permanent deletion of that task only, returning `{ id, projectId }` after commit. Its project, source note, note revisions and chat history remain untouched. A lost acknowledgement is not idempotent success; reload before retrying.
+
+All six operations obtain a fresh server-side session and use project-derived ownership predicates. Source notes are checked against the same owned project and share-locked within create/update transactions; a single-column note FK alone does not enforce same-project scope. Missing, foreign and mismatched sources deny identically. No owner field or model-supplied identity is accepted.
+
+Status is `todo | in_progress | blocked | done`; priority is `urgent | high | medium | low | null`. Titles are trimmed/nonblank, maximum 300 JavaScript string units; descriptions and plain-text PIC/assignee names are nullable, maximum 5,000 and 200. Original description/assignee whitespace is preserved. All task text rejects NUL and unpaired surrogates. Due dates use validated calendar strings, years 0001–9999; bounds are inclusive and must be ordered. A due-date filter excludes undated tasks. Overdue is derived, not a stored status or timezone-driven mutation.
+
+Lists default to 50/max 100 rows and offset 0–100,000. Filters execute before pagination; ordering is `updatedAt DESC, id DESC`. Summaries omit descriptions and add only the authorized `projectName`; offset pagination is not a snapshot across concurrent edits. Project/activity and project/due-date indexes support the required project queries; owner-wide performance remains unmeasured.
+
+Updates/deletions lock the owned task under READ COMMITTED and check `expectedVersion`, retaining owner/version predicates on the final write. Stale no-ops conflict; current no-ops preserve version/timestamps. Meaningful edits increment version, rejecting integer exhaustion. Entering done sets completion, editing while done preserves it, leaving done clears it; all manual transitions are allowed. Successful mutation actions revalidate existing dashboard/project views, never unfinished task routes. No task revision history or automatic retries are introduced.
+
+`tasks.test.ts` and `packages/db/src/tasks-schema.test.ts` use the existing offline SQL/metadata pattern. They do not prove real PostgreSQL constraints, locks, rollback or persisted account isolation. The additive generated SQL and execution prerequisites are documented in `packages/db/src/migrations/README.md`; migration execution is separately gated.
+
 ## Note revision transaction
 
 `updateNote` starts a READ COMMITTED transaction and locks the ownership-scoped note using `FOR UPDATE OF notes`. Only then, in a separate statement, it reads the largest stored snapshot version. This avoids allocating a version using an old statement snapshot after waiting for another writer's lock. The outgoing version is `max(snapshot.version) + 1`, or 1 without history.

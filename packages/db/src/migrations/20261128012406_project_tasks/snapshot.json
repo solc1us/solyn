@@ -1,0 +1,548 @@
+{
+  "type": "diff",
+  "version": "9",
+  "dialect": "postgres",
+  "id": "573796db-74aa-43da-83d0-68621e8fa9a8",
+  "prevIds": [
+    "8d7a5c23-e5ef-441b-8234-211cb13842de"
+  ],
+  "footprints": [
+    {
+      "statementType": "create_table",
+      "statementTarget": [
+        "table",
+        "public",
+        "tasks"
+      ],
+      "writes": [
+        "s|tbl|public.tasks",
+        "n|tbl|public.tasks",
+        "e|tbl|public.tasks",
+        "n|rel|public.tasks",
+        "n|type|public.tasks",
+        "n|rel|public.tasks_pkey"
+      ],
+      "reads": [
+        "n|sch|public"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "public",
+        "tasks",
+        "tasks_project_updated_idx"
+      ],
+      "writes": [
+        "s|idx|public.tasks_project_updated_idx",
+        "n|idx|public.tasks_project_updated_idx",
+        "e|idx|public.tasks_project_updated_idx",
+        "n|rel|public.tasks_project_updated_idx"
+      ],
+      "reads": [
+        "n|tbl|public.tasks",
+        "n|sch|public",
+        "n|col|public.tasks.project_id",
+        "n|col|public.tasks.updated_at",
+        "n|col|public.tasks.id"
+      ]
+    },
+    {
+      "statementType": "create_index",
+      "statementTarget": [
+        "index",
+        "public",
+        "tasks",
+        "tasks_project_due_idx"
+      ],
+      "writes": [
+        "s|idx|public.tasks_project_due_idx",
+        "n|idx|public.tasks_project_due_idx",
+        "e|idx|public.tasks_project_due_idx",
+        "n|rel|public.tasks_project_due_idx"
+      ],
+      "reads": [
+        "n|tbl|public.tasks",
+        "n|sch|public",
+        "n|col|public.tasks.project_id",
+        "n|col|public.tasks.due_date",
+        "n|col|public.tasks.id"
+      ]
+    },
+    {
+      "statementType": "create_fk",
+      "statementTarget": [
+        "table",
+        "public",
+        "tasks"
+      ],
+      "writes": [
+        "s|fk|public.tasks.tasks_project_id_projects_id_fkey",
+        "n|fk|public.tasks.tasks_project_id_projects_id_fkey",
+        "e|fk|public.tasks.tasks_project_id_projects_id_fkey",
+        "n|con|public.tasks.tasks_project_id_projects_id_fkey"
+      ],
+      "reads": [
+        "n|tbl|public.tasks",
+        "n|sch|public",
+        "n|tbl|public.projects",
+        "n|sch|public",
+        "n|col|public.tasks.project_id",
+        "n|col|public.projects.id",
+        "e|uniqueness|public.projects.id"
+      ]
+    },
+    {
+      "statementType": "create_fk",
+      "statementTarget": [
+        "table",
+        "public",
+        "tasks"
+      ],
+      "writes": [
+        "s|fk|public.tasks.tasks_source_note_id_notes_id_fkey",
+        "n|fk|public.tasks.tasks_source_note_id_notes_id_fkey",
+        "e|fk|public.tasks.tasks_source_note_id_notes_id_fkey",
+        "n|con|public.tasks.tasks_source_note_id_notes_id_fkey"
+      ],
+      "reads": [
+        "n|tbl|public.tasks",
+        "n|sch|public",
+        "n|tbl|public.notes",
+        "n|sch|public",
+        "n|col|public.tasks.source_note_id",
+        "n|col|public.notes.id",
+        "e|uniqueness|public.notes.id"
+      ]
+    }
+  ],
+  "deltas": [
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "name": "tasks",
+        "isRlsEnabled": false,
+        "entityType": "tables"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "gen_random_uuid()",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "project_id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "title",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "description",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "status",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "'todo'",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "priority",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "assignee",
+        "type": "text",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "due_date",
+        "type": "date",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "source_note_id",
+        "type": "uuid",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "version",
+        "type": "integer",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "1",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "created_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "now()",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "updated_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": true,
+        "dimensions": 0,
+        "default": "now()",
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "completed_at",
+        "type": "timestamp with time zone",
+        "typeSchema": null,
+        "notNull": false,
+        "dimensions": 0,
+        "default": null,
+        "generated": null,
+        "identity": null,
+        "entityType": "columns"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "tasks_project_updated_idx",
+        "nameExplicit": true,
+        "columns": [
+          {
+            "value": "project_id",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": null
+          },
+          {
+            "value": "updated_at",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": null
+          },
+          {
+            "value": "id",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": null
+          }
+        ],
+        "isUnique": false,
+        "where": null,
+        "with": "",
+        "method": "btree",
+        "concurrently": false,
+        "entityType": "indexes"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "tasks_project_due_idx",
+        "nameExplicit": true,
+        "columns": [
+          {
+            "value": "project_id",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": null
+          },
+          {
+            "value": "due_date",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": null
+          },
+          {
+            "value": "id",
+            "isExpression": false,
+            "asc": true,
+            "nullsFirst": false,
+            "opclass": null
+          }
+        ],
+        "isUnique": false,
+        "where": null,
+        "with": "",
+        "method": "btree",
+        "concurrently": false,
+        "entityType": "indexes"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "tasks_project_id_projects_id_fkey",
+        "nameExplicit": false,
+        "columns": [
+          "project_id"
+        ],
+        "schemaTo": "public",
+        "tableTo": "projects",
+        "columnsTo": [
+          "id"
+        ],
+        "onUpdate": "NO ACTION",
+        "onDelete": "RESTRICT",
+        "entityType": "fks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "tasks_source_note_id_notes_id_fkey",
+        "nameExplicit": false,
+        "columns": [
+          "source_note_id"
+        ],
+        "schemaTo": "public",
+        "tableTo": "notes",
+        "columnsTo": [
+          "id"
+        ],
+        "onUpdate": "NO ACTION",
+        "onDelete": "RESTRICT",
+        "entityType": "fks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "tasks_pkey",
+        "columns": [
+          "id"
+        ],
+        "nameExplicit": false,
+        "entityType": "pks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "tasks_title_nonblank",
+        "value": "\"title\" ~ '[^[:space:]]'",
+        "entityType": "checks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "tasks_title_length",
+        "value": "char_length(\"title\") <= 300",
+        "entityType": "checks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "tasks_description_length",
+        "value": "char_length(\"description\") <= 5000",
+        "entityType": "checks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "tasks_assignee_length",
+        "value": "char_length(\"assignee\") <= 200",
+        "entityType": "checks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "tasks_status_valid",
+        "value": "\"status\" in ('todo', 'in_progress', 'blocked', 'done')",
+        "entityType": "checks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "tasks_priority_valid",
+        "value": "\"priority\" in ('urgent', 'high', 'medium', 'low')",
+        "entityType": "checks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "tasks_version_positive",
+        "value": "\"version\" > 0",
+        "entityType": "checks"
+      }
+    },
+    {
+      "op": "create",
+      "row": {
+        "schema": "public",
+        "table": "tasks",
+        "name": "tasks_completed_consistent",
+        "value": "(\"status\" = 'done' and \"completed_at\" is not null) or (\"status\" <> 'done' and \"completed_at\" is null)",
+        "entityType": "checks"
+      }
+    }
+  ]
+}

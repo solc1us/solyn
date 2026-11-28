@@ -83,6 +83,67 @@ export const updateNoteInput = z
     "Provide a note change",
   );
 
+// Task text follows the existing PostgreSQL-compatible search/confirmation boundary.
+const taskText = (value: string) => !value.includes("\0") && !/[\uD800-\uDFFF]/u.test(value);
+export const taskStatus = z.enum(["todo", "in_progress", "blocked", "done"]);
+export const taskPriority = z.enum(["urgent", "high", "medium", "low"]).nullable();
+const taskChanges = {
+  title: title.refine(taskText),
+  description: z.string().max(5_000).refine(taskText).nullable(),
+  status: taskStatus,
+  priority: taskPriority,
+  assignee: z.string().max(200).refine(taskText).nullable(),
+  dueDate: noteDate,
+  sourceNoteId: uuid.nullable(),
+};
+const expectedTaskVersion = z.number().int().min(1).max(2_147_483_647);
+export const createTaskInput = z.strictObject({
+  projectId: uuid,
+  ...taskChanges,
+  description: taskChanges.description.optional(),
+  status: taskStatus.default("todo"),
+  priority: taskPriority.optional(),
+  assignee: taskChanges.assignee.optional(),
+  dueDate: noteDate.optional(),
+  sourceNoteId: taskChanges.sourceNoteId.optional(),
+});
+export const taskInput = z.strictObject({ taskId: uuid });
+export const updateTaskInput = z
+  .strictObject({
+    taskId: uuid,
+    expectedVersion: expectedTaskVersion,
+    ...z.object(taskChanges).partial().shape,
+  })
+  .refine(
+    (value) =>
+      Object.keys(taskChanges).some((key) => value[key as keyof typeof taskChanges] !== undefined),
+    "Provide a task change",
+  );
+export const deleteTaskInput = z.strictObject({
+  taskId: uuid,
+  expectedVersion: expectedTaskVersion,
+});
+const taskFilters = {
+  status: taskStatus.optional(),
+  priority: taskPriority.optional(),
+  dueDateFrom: noteDate.unwrap().optional(),
+  dueDateTo: noteDate.unwrap().optional(),
+  ...pagination,
+};
+const validTaskRange = (value: { dueDateFrom?: string; dueDateTo?: string }) =>
+  !value.dueDateFrom || !value.dueDateTo || value.dueDateFrom <= value.dueDateTo;
+export const listTasksInput = z
+  .strictObject({ projectId: uuid, ...taskFilters })
+  .refine(validTaskRange, "Invalid due-date range");
+export const listOwnedTasksInput = z
+  .strictObject({ projectId: uuid.optional(), ...taskFilters })
+  .refine(validTaskRange, "Invalid due-date range");
+export type CreateTaskInput = z.input<typeof createTaskInput>;
+export type UpdateTaskInput = z.input<typeof updateTaskInput>;
+export type DeleteTaskInput = z.input<typeof deleteTaskInput>;
+export type ListTasksInput = z.input<typeof listTasksInput>;
+export type ListOwnedTasksInput = z.input<typeof listOwnedTasksInput>;
+
 export type CreateProjectInput = z.input<typeof createProjectInput>;
 export type UpdateProjectInput = z.input<typeof updateProjectInput>;
 export type CreateNoteInput = z.input<typeof createNoteInput>;

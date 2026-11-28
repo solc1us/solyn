@@ -4,6 +4,23 @@
 
 The NOT APPLIED labels in the Phase 1C/2B reviews below record those earlier offline implementation stages, not the present remote state. Do not reapply old migrations on the basis of those historical labels. Production, permission changes and disposable database-write tests still require separate approval.
 
+## P5.2 — structured tasks (local artifacts only, NOT APPLIED)
+
+PM explicitly approved the section-3 task schema and local generation, not execution. Generated with installed Drizzle Kit **1.0.0-rc.5** through the existing config/history:
+
+```sh
+cd packages/db
+bun run db:generate --name project_tasks
+```
+
+Artifacts: `20261128012406_project_tasks/{migration.sql,snapshot.json}`. SQL creates only `tasks`: 13 columns, UUID PK/default, eight CHECKs, two project indexes and two restrictive FKs. There are five statements total: CREATE TABLE, two CREATE INDEX and two ALTER TABLE tasks ADD CONSTRAINT. The v9 snapshot points to the source-reference snapshot; all 27 deltas create task entities, with no existing-table/data/auth/grant/RLS changes. Historical migrations are untouched.
+
+Task ownership derives from projects. Required title/status/version, nullable description/priority/assignee/date/source note/completion and timezone-aware audit timestamps match the approved schema. CHECKs enforce nonblank/max-300 title, description <=5,000, assignee <=200, allowed status/priority, positive version and `status = done` iff completion is non-null. SQL character limits count PostgreSQL characters; application limits conservatively count JavaScript string units. The two indexes are `(project_id, updated_at, id)` for ordered project lists and `(project_id, due_date, id)` for required due-date range filters; no speculative status/priority/assignee/source indexes are added.
+
+Both FKs use RESTRICT deletion and default NO ACTION updates. The source-note FK alone does not enforce the same project; authenticated backend validation enforces that relationship. Project assignment is immutable through the service. `$onUpdate` remains an ORM hook, not a DB trigger; completion/version/no-op semantics require the service protocol. Permanent task deletion never removes its parent or source.
+
+**No database connection, SQL execution or migration application occurred.** Before later execution, PM must approve the exact non-production target and SQL, verify baseline/migration-history compatibility and backup/recovery/DDL timing, and reconfirm backend privileges and disabled Data API/non-exposure for this new public table. No grants/RLS changes are authorized here; Better Auth identities must not be mapped speculatively to Supabase Auth. Apply the reviewed migration before enabling task operations on that target. Real CHECK/FK/date round-trip, persisted isolation and concurrent version/update/delete verification remain separately gated; offline tests are not that evidence.
+
 ## P4.4B — durable retrieved-note references (local artifacts only, NOT APPLIED)
 
 Generated with the installed Drizzle Kit **1.0.0-rc.5**, using the existing PostgreSQL schema/output paths without loading runtime credentials:

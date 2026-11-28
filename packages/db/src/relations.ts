@@ -10,6 +10,7 @@ const workspaceRelations = defineRelations(schema, (r) => ({
   projects: {
     owner: r.one.user({ from: r.projects.ownerId, to: r.user.id }),
     notes: r.many.notes({ from: r.projects.id, to: r.notes.projectId }),
+    tasks: r.many.tasks({ from: r.projects.id, to: r.tasks.projectId }),
     conversations: r.many.chatConversations({
       from: r.projects.id,
       to: r.chatConversations.projectId,
@@ -18,6 +19,11 @@ const workspaceRelations = defineRelations(schema, (r) => ({
   notes: {
     project: r.one.projects({ from: r.notes.projectId, to: r.projects.id }),
     revisions: r.many.noteRevisions({ from: r.notes.id, to: r.noteRevisions.noteId }),
+    tasks: r.many.tasks({ from: r.notes.id, to: r.tasks.sourceNoteId }),
+  },
+  tasks: {
+    project: r.one.projects({ from: r.tasks.projectId, to: r.projects.id }),
+    sourceNote: r.one.notes({ from: r.tasks.sourceNoteId, to: r.notes.id }),
   },
   noteRevisions: {
     note: r.one.notes({ from: r.noteRevisions.noteId, to: r.notes.id }),

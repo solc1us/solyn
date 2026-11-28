@@ -1,8 +1,8 @@
 import type { Database } from "@solyn/db";
-import { noteRevisions, notes, projects } from "@solyn/db/schema/workspace";
+import { noteRevisions, notes, projects, tasks } from "@solyn/db/schema/workspace";
 import { chatConversations, chatMessages } from "@solyn/db/schema/chat";
 import { noteProposals } from "@solyn/db/schema/note-proposals";
-import { and, desc, eq, exists, isNull, max, or, sql } from "drizzle-orm";
+import { and, desc, eq, exists, gte, isNull, lte, max, or, sql } from "drizzle-orm";
 import { confirmNoteProposalInput } from "../chat/contracts";
 import type { z } from "zod";
 
@@ -36,6 +36,23 @@ const noteFields = {
   createdAt: notes.createdAt,
   updatedAt: notes.updatedAt,
 };
+const taskFields = {
+  id: tasks.id,
+  projectId: tasks.projectId,
+  title: tasks.title,
+  description: tasks.description,
+  status: tasks.status,
+  priority: tasks.priority,
+  assignee: tasks.assignee,
+  dueDate: tasks.dueDate,
+  sourceNoteId: tasks.sourceNoteId,
+  version: tasks.version,
+  createdAt: tasks.createdAt,
+  updatedAt: tasks.updatedAt,
+  completedAt: tasks.completedAt,
+};
+const taskConflict = () =>
+  new WorkspaceError("CONFLICT", "This task has changed. Reload it before retrying.");
 // A single-statement read of current state and logical version shares one snapshot.
 const currentVersion =
   sql<number>`coalesce((select max(${noteRevisions.version}) from ${noteRevisions} where ${noteRevisions.noteId} = ${notes.id}), 0) + 1`.as(
@@ -132,7 +149,181 @@ export function createWorkspaceService(dependencies: {
       ),
     );
 
+  const ownedTask = (taskId: string, ownerId: string) =>
+    and(
+      eq(tasks.id, taskId),
+      exists(
+        db
+          .select({ id: projects.id })
+          .from(projects)
+          .where(and(eq(projects.id, tasks.projectId), eq(projects.ownerId, ownerId))),
+      ),
+    );
+  async function lockTask(tx: Transaction, taskId: string, ownerId: string) {
+    const [task] = await tx
+      .select(taskFields)
+      .from(tasks)
+      .where(ownedTask(taskId, ownerId))
+      .for("update", { of: tasks });
+    if (!task) throw missing();
+    return task;
+  }
+  async function validateTaskSource(
+    tx: Transaction,
+    projectId: string,
+    ownerId: string,
+    sourceNoteId: string | null,
+  ) {
+    if (sourceNoteId === null) return;
+    // The single-column FK alone cannot guarantee same-project provenance.
+    const [note] = await tx
+      .select({ id: notes.id })
+      .from(notes)
+      .where(ownedNote(projectId, ownerId, sourceNoteId))
+      .for("share", { of: notes });
+    if (!note) throw missing();
+  }
+  async function readTaskList(
+    value: z.output<typeof contracts.listOwnedTasksInput>,
+    ownerId: string,
+  ) {
+    // Summaries omit long descriptions and all account/auth metadata.
+    const { description: _description, ...summary } = taskFields;
+    return db
+      .select({ ...summary, projectName: projects.name })
+      .from(tasks)
+      .innerJoin(projects, eq(projects.id, tasks.projectId))
+      .where(
+        and(
+          eq(projects.ownerId, ownerId),
+          value.projectId ? eq(tasks.projectId, value.projectId) : undefined,
+          value.status !== undefined ? eq(tasks.status, value.status) : undefined,
+          value.priority === undefined
+            ? undefined
+            : value.priority === null
+              ? isNull(tasks.priority)
+              : eq(tasks.priority, value.priority),
+          value.dueDateFrom ? gte(tasks.dueDate, value.dueDateFrom) : undefined,
+          value.dueDateTo ? lte(tasks.dueDate, value.dueDateTo) : undefined,
+        ),
+      )
+      .orderBy(desc(tasks.updatedAt), desc(tasks.id))
+      .limit(value.limit)
+      .offset(value.offset);
+  }
+
   return {
+    createTask(input: unknown) {
+      return run(contracts.createTaskInput, input, (value, ownerId) =>
+        db.transaction(
+          async (tx) => {
+            await lockOwnedProject(tx, value.projectId, ownerId);
+            await validateTaskSource(tx, value.projectId, ownerId, value.sourceNoteId ?? null);
+            const [task] = await tx
+              .insert(tasks)
+              .values({
+                projectId: value.projectId,
+                title: value.title,
+                description: value.description ?? null,
+                status: value.status,
+                priority: value.priority ?? null,
+                assignee: value.assignee ?? null,
+                dueDate: value.dueDate ?? null,
+                sourceNoteId: value.sourceNoteId ?? null,
+                version: 1,
+                completedAt: value.status === "done" ? sql`now()` : null,
+              })
+              .returning(taskFields);
+            if (!task) throw new Error("Insert returned no task");
+            return task;
+          },
+          { isolationLevel: "read committed" },
+        ),
+      );
+    },
+    getTask(input: unknown) {
+      return run(contracts.taskInput, input, async (value, ownerId) => {
+        const [task] = await db
+          .select(taskFields)
+          .from(tasks)
+          .where(ownedTask(value.taskId, ownerId));
+        if (!task) throw missing();
+        return task;
+      });
+    },
+    listTasks(input: unknown) {
+      return run(contracts.listTasksInput, input, async (value, ownerId) => {
+        const [project] = await db
+          .select({ id: projects.id })
+          .from(projects)
+          .where(ownedProject(value.projectId, ownerId));
+        if (!project) throw missing();
+        return readTaskList(value, ownerId);
+      });
+    },
+    listOwnedTasks(input: unknown = {}) {
+      // Optional foreign/missing project filters return the same empty collection.
+      return run(contracts.listOwnedTasksInput, input, readTaskList);
+    },
+    updateTask(input: unknown) {
+      return run(contracts.updateTaskInput, input, (value, ownerId) =>
+        db.transaction(
+          async (tx) => {
+            const task = await lockTask(tx, value.taskId, ownerId);
+            // Validate version before no-op detection; stale identical writes still conflict.
+            if (task.version !== value.expectedVersion) throw taskConflict();
+            const next = {
+              title: value.title ?? task.title,
+              description: value.description === undefined ? task.description : value.description,
+              status: value.status ?? task.status,
+              priority: value.priority === undefined ? task.priority : value.priority,
+              assignee: value.assignee === undefined ? task.assignee : value.assignee,
+              dueDate: value.dueDate === undefined ? task.dueDate : value.dueDate,
+              sourceNoteId:
+                value.sourceNoteId === undefined ? task.sourceNoteId : value.sourceNoteId,
+            };
+            if (
+              Object.entries(next).every(([key, field]) => task[key as keyof typeof next] === field)
+            )
+              return task;
+            if (task.version >= 2_147_483_647) throw taskConflict();
+            if (next.sourceNoteId !== task.sourceNoteId)
+              await validateTaskSource(tx, task.projectId, ownerId, next.sourceNoteId);
+            const now = new Date();
+            const [updated] = await tx
+              .update(tasks)
+              .set({
+                ...next,
+                version: task.version + 1,
+                updatedAt: now,
+                completedAt: next.status === "done" ? (task.completedAt ?? now) : null,
+              })
+              .where(and(ownedTask(task.id, ownerId), eq(tasks.version, value.expectedVersion)))
+              .returning(taskFields);
+            if (!updated) throw taskConflict();
+            return updated;
+          },
+          { isolationLevel: "read committed" },
+        ),
+      );
+    },
+    deleteTask(input: unknown) {
+      return run(contracts.deleteTaskInput, input, (value, ownerId) =>
+        db.transaction(
+          async (tx) => {
+            const task = await lockTask(tx, value.taskId, ownerId);
+            if (task.version !== value.expectedVersion) throw taskConflict();
+            const [deleted] = await tx
+              .delete(tasks)
+              .where(and(ownedTask(task.id, ownerId), eq(tasks.version, value.expectedVersion)))
+              .returning({ id: tasks.id, projectId: tasks.projectId });
+            if (!deleted) throw taskConflict();
+            return deleted;
+          },
+          { isolationLevel: "read committed" },
+        ),
+      );
+    },
     confirmNoteProposal(input: unknown) {
       return run(confirmNoteProposalInput, input, (value, ownerId) =>
         db.transaction(

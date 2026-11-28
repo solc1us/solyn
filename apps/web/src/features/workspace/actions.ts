@@ -32,6 +32,30 @@ export async function updateProject(input: unknown) {
   }
   return result;
 }
+export async function createTask(input: unknown) {
+  const result = await workspace.createTask(input);
+  if (result.ok) refreshProjectViews(result.data.projectId);
+  return result;
+}
+export async function getTask(input: unknown) {
+  return workspace.getTask(input);
+}
+export async function listTasks(input: unknown) {
+  return workspace.listTasks(input);
+}
+export async function listOwnedTasks(input: unknown = {}) {
+  return workspace.listOwnedTasks(input);
+}
+export async function updateTask(input: unknown) {
+  const result = await workspace.updateTask(input);
+  if (result.ok) refreshProjectViews(result.data.projectId);
+  return result;
+}
+export async function deleteTask(input: unknown) {
+  const result = await workspace.deleteTask(input);
+  if (result.ok) refreshProjectViews(result.data.projectId);
+  return result;
+}
 export async function listNotes(input: unknown) {
   return workspace.listNotes(input);
 }
