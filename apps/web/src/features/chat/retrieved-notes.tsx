@@ -28,6 +28,7 @@ export function RetrievedNotes({
                 prefetch={false}
                 className="underline underline-offset-4"
               >
+                <span className="text-muted-foreground">{source.projectName} · </span>
                 {source.title}
               </Link>
             ) : (

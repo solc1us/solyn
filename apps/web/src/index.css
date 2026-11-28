@@ -153,10 +153,56 @@ fieldset {
 [data-slot="textarea"] {
   outline: none !important;
 }
-/* Document fields focus only their underline; primitive invalid borders remain in charge. */
-.form-control[data-slot]:is(.title-input, .writing-area):focus:not([aria-invalid="true"]) {
-  border-color: transparent;
-  border-bottom-color: var(--ring);
+/* Scoped workspace/proposal surfaces; login and other shared fields are unchanged.
+   Primitive focus/error borders remain in charge, including while invalid+focused. */
+.form-control,
+.chat-composer {
+  background: #1c1e25;
+}
+.form-control:not(:focus):not([aria-invalid="true"]),
+.chat-composer:not(:focus-within):not([aria-invalid="true"]) {
+  border-color: #363a42;
+}
+.form-control {
+  outline: none !important;
+}
+/* Compact message presentation only; Main Chat keeps its existing reading type. */
+.project-chat-panel .chat-message {
+  margin-bottom: 18px;
+}
+.project-chat-panel .chat-message > header {
+  margin-bottom: 6px;
+  gap: 8px;
+}
+.project-chat-panel .chat-prose {
+  font-size: 13px;
+  line-height: 1.6;
+}
+.project-chat-panel .chat-prose > * + * {
+  margin-top: 8px;
+}
+.project-chat-panel .chat-prose h3 {
+  font-size: 14px;
+}
+.project-chat-panel .chat-prose code {
+  font-size: 13px;
+}
+.project-chat-panel .chat-prose pre {
+  max-width: 100%;
+  max-height: min(40dvh, 240px);
+  overflow: auto;
+  padding: 10px;
+}
+.project-chat-panel .chat-composer {
+  padding: 8px;
+}
+.project-chat-panel .chat-input {
+  font-size: 14px;
+}
+@media (max-width: 760px) {
+  .project-chat-panel .chat-input {
+    font-size: 16px;
+  }
 }
 /* Keep structural prose/code rules scoped; Chat geometry and role styles live in JSX. */
 .chat-prose p {

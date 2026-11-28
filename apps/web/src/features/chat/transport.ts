@@ -53,27 +53,23 @@ const messageSchema = z.object({
 export type WireMessage = Omit<z.infer<typeof messageSchema>, "sources"> & {
   sources?: SourceView[];
 };
+// null is general-chat scope; undefined is transport validation before scope is
+// known. Neither bypasses structural validation or completed assistant identity.
 export function sourcesMatchMessage(
   message: Pick<WireMessage, "role" | "status" | "sources" | "proposal">,
   projectId?: string | null,
 ) {
+  const parsed = sourcesSchema.safeParse(message.sources ?? []);
+  if (!parsed.success) return false;
   return (
-    !message.sources?.length ||
-    (projectId !== null &&
-      message.role === "assistant" &&
+    !parsed.data.length ||
+    (message.role === "assistant" &&
       message.status === "completed" &&
       !message.proposal &&
-      message.sources.every(
+      parsed.data.every(
         (source) =>
-          source.state === "unavailable" ||
-          projectId === undefined ||
-          source.projectId === projectId,
-      ) &&
-      new Set(
-        message.sources
-          .filter((source) => source.state === "available")
-          .map((source) => source.projectId),
-      ).size <= 1)
+          source.state === "unavailable" || projectId == null || source.projectId === projectId,
+      ))
   );
 }
 export function proposalMatchesMessage(

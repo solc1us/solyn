@@ -338,6 +338,40 @@ export function createWorkspaceService(dependencies: {
           .offset(value.offset);
       });
     },
+    searchOwnedNotes(input: unknown) {
+      return run(contracts.searchOwnedNotesInput, input, async (value, ownerId) => {
+        const pattern = `%${value.query.replace(/[!%_]/g, "!$&")}%`;
+        const titleMatch = sql<boolean>`${notes.title} ilike ${pattern} escape '!'`;
+        const contentMatch = sql<boolean>`${notes.content} ilike ${pattern} escape '!'`;
+        // One statement scopes both matches and project metadata to the fresh
+        // session owner. Missing/foreign project filters are indistinguishable.
+        return db
+          .select({
+            id: notes.id,
+            projectId: notes.projectId,
+            projectName: projects.name,
+            title: notes.title,
+            excerpt:
+              sql<string>`substring(${notes.content} from greatest(1, strpos(lower(${notes.content}), lower(${value.query})) - 80) for 320)`.as(
+                "excerpt",
+              ),
+            noteDate: notes.noteDate,
+            updatedAt: notes.updatedAt,
+          })
+          .from(notes)
+          .innerJoin(projects, eq(projects.id, notes.projectId))
+          .where(
+            and(
+              eq(projects.ownerId, ownerId),
+              value.projectId ? eq(notes.projectId, value.projectId) : undefined,
+              or(titleMatch, contentMatch),
+            ),
+          )
+          .orderBy(desc(titleMatch), desc(notes.updatedAt), desc(notes.id))
+          .limit(value.limit)
+          .offset(value.offset);
+      });
+    },
     getNote(input: unknown) {
       return run(contracts.noteInput, input, async (value, ownerId) => {
         const [note] = await db

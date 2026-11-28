@@ -22,7 +22,8 @@ import {
 
 export type ChatView = Extract<Awaited<ReturnType<typeof getConversation>>, { ok: true }>["data"];
 export type ProjectScope = { id: string; name: string } | null;
-export type UiMessage = WireMessage & { persisted: boolean };
+// Ephemeral, allowlisted display reason only; never persisted as assistant text.
+export type UiMessage = WireMessage & { persisted: boolean; failure?: Issue };
 export type ProposalEdit = { projectId: string; title: string; content: string; noteDate: string };
 export function originalProposalEdit(proposal: ProposalView): ProposalEdit {
   return {
@@ -72,9 +73,66 @@ export function messageStatus(message: UiMessage, busy: boolean) {
     message.status
   ];
 }
+export function isGenerationFailure(issue: Issue | null) {
+  return (
+    issue !== null &&
+    [
+      "RATE_LIMITED",
+      "PROVIDER_TIMEOUT",
+      "PROVIDER_NETWORK",
+      "PROVIDER_REJECTED",
+      "EMPTY_RESPONSE",
+      "OUTPUT_LIMIT",
+    ].includes(issue)
+  );
+}
+export function replyFailureNotice(
+  message: UiMessage,
+  recoveryRequired: boolean,
+  canSend: boolean,
+) {
+  if (message.role !== "assistant" || !message.persisted || message.status !== "failed")
+    return null;
+  const reason = message.failure;
+  const base =
+    reason === "RATE_LIMITED"
+      ? "Solyn is temporarily busy."
+      : reason === "PROVIDER_TIMEOUT"
+        ? "Solyn took too long to respond."
+        : reason === "PROVIDER_AUTH" || reason === "PROVIDER_CONFIGURATION"
+          ? "Solyn is unavailable until its provider configuration is restored."
+          : "Solyn couldn't complete this reply.";
+  const partial = message.content ? " The text above is incomplete." : "";
+  if (recoveryRequired) return `${base}${partial} Reload saved history before continuing.`;
+  if (reason === "PROVIDER_AUTH" || reason === "PROVIDER_CONFIGURATION" || !canSend)
+    return `${base}${partial}`;
+  return `${base}${partial} ${reason === "RATE_LIMITED" ? "Please try again later." : reason === "PROVIDER_TIMEOUT" ? "Please try again." : "Please send your message again."}`;
+}
 export class ChatSessions {
   private sessions = new Map<string, ChatSession>();
+  private deleted = new Set<string>();
+  isDeleted(id: string) {
+    return this.deleted.has(id);
+  }
+  remove(id: string) {
+    this.deleted.add(id);
+    for (const [key, session] of this.sessions) {
+      if (key === `conversation:${id}` || session.getSnapshot().conversation?.id === id) {
+        session.retire();
+        this.sessions.delete(key);
+      }
+    }
+  }
+  rename(id: string, title: string) {
+    if (this.deleted.has(id)) return;
+    for (const session of this.sessions.values()) session.renameTitle(id, title);
+  }
   select(key: string, create: () => ChatSession) {
+    if (key.startsWith("conversation:") && this.deleted.has(key.slice("conversation:".length))) {
+      const retired = create();
+      retired.retire();
+      return retired;
+    }
     const found = this.sessions.get(key);
     // Selection can run more than once during render (including StrictMode).
     // Only the committed view lifecycle may invalidate/publish session state.
@@ -86,7 +144,12 @@ export class ChatSessions {
   }
   promote(key: string, id: string, session: ChatSession) {
     this.sessions.delete(key);
+    if (this.deleted.has(id)) {
+      session.retire();
+      return false;
+    }
     this.sessions.set(`conversation:${id}`, session);
+    return true;
   }
 }
 export function conversationTitle(content: string) {
@@ -123,6 +186,8 @@ export class ChatSession {
   private olderOffset = 0;
   private sourceRead = 0;
   private sourceEpoch = 0;
+  private retired = false;
+  private titleRevision = 0;
   constructor(
     private dependencies: {
       create: typeof createConversation;
@@ -182,7 +247,43 @@ export class ChatSession {
       this.listeners.delete(listener);
     };
   };
+  // An acknowledged permanent delete retires the whole view, including receipts.
+  // Late reads/streams/confirmation acknowledgements cannot resurrect it.
+  retire() {
+    if (this.retired) return;
+    this.retired = true;
+    this.sourceRead++;
+    this.sourceEpoch++;
+    this.abortController?.abort();
+    this.abortController = null;
+    this.state = {
+      ...this.state,
+      conversation: null,
+      project: null,
+      messages: [],
+      draft: "",
+      phase: "idle",
+      issue: null,
+      needsReconcile: false,
+      creationUnconfirmed: false,
+      attempt: null,
+      pendingTurn: null,
+      hasOlder: false,
+      viewingOlder: false,
+      proposalEdits: {},
+      proposalSaves: {},
+      proposalReceipts: {},
+    };
+    for (const listener of this.listeners) listener();
+  }
+  renameTitle(id: string, title: string) {
+    if (this.state.conversation?.id === id) {
+      this.titleRevision++;
+      this.set({ conversation: { ...this.state.conversation, title } });
+    }
+  }
   private set(update: Partial<SessionState>) {
+    if (this.retired) return;
     const receipts = { ...this.state.proposalReceipts, ...update.proposalReceipts };
     const incoming = update.messages ?? (update.proposalReceipts ? this.state.messages : undefined);
     if (incoming) {
@@ -260,6 +361,7 @@ export class ChatSession {
     this.set({ proposalReceipts: { ...this.state.proposalReceipts, [value.id]: value } });
   }
   async confirmProposal(id: string) {
+    if (this.retired) return;
     if (this.state.proposalReceipts[id]) return;
     const previous = this.state.proposalSaves[id];
     if (previous && previous.phase !== "retry" && previous.phase !== "error") return;
@@ -308,6 +410,7 @@ export class ChatSession {
     }
   }
   async recoverProposal(id: string) {
+    if (this.retired) return;
     const save = this.state.proposalSaves[id];
     if (
       !save ||
@@ -353,6 +456,7 @@ export class ChatSession {
   }
   get canSend() {
     return (
+      !this.retired &&
       !this.busy &&
       !this.state.viewingOlder &&
       !this.state.creationUnconfirmed &&
@@ -363,6 +467,7 @@ export class ChatSession {
   }
   get canRetry() {
     return (
+      !this.retired &&
       !this.busy &&
       !this.state.viewingOlder &&
       !!this.state.attempt &&
@@ -372,7 +477,7 @@ export class ChatSession {
   }
   // Called on committed session switches, before paint, or before a fresh read.
   invalidateSources() {
-    if (!this.conversationId) return;
+    if (this.retired || !this.conversationId) return;
     this.sourceRead++;
     this.sourceEpoch++;
     this.set({
@@ -386,7 +491,7 @@ export class ChatSession {
     this.abortController.abort();
   }
   async reload(older = false, discardProposalEdits = true) {
-    if (this.busy || !this.conversationId) return;
+    if (this.retired || this.busy || !this.conversationId) return;
     const sourceEpoch = this.sourceEpoch;
     this.set({ phase: "reloading" });
     try {
@@ -401,7 +506,7 @@ export class ChatSession {
     }
   }
   adopt(initial: Awaited<ReturnType<typeof getConversation>>) {
-    if (this.busy) return;
+    if (this.retired || this.busy) return;
     if (initial.ok && initial.data.conversation.id !== this.conversationId) return;
     if (
       this.state.messages.some((message) => message.sources?.length) ||
@@ -435,8 +540,9 @@ export class ChatSession {
     void this.reconcile(false, initial);
   }
   private async reconcile(older = false, initial?: Awaited<ReturnType<typeof getConversation>>) {
-    if (!this.conversationId) return;
+    if (this.retired || !this.conversationId) return;
     const read = ++this.sourceRead;
+    const titleRevision = this.titleRevision;
     try {
       const offset = older ? this.olderOffset : 0;
       const result =
@@ -462,6 +568,8 @@ export class ChatSession {
         const local = this.state.messages.find(
           (row) => row.turnId === message.turnId && row.role === message.role,
         );
+        if (message.role === "assistant" && message.status === "failed" && local?.failure)
+          return { ...message, failure: local.failure };
         return message.role === "assistant" &&
           message.status === "pending" &&
           local &&
@@ -498,7 +606,13 @@ export class ChatSession {
           ),
         );
       this.set({
-        conversation: view.conversation,
+        // RSC has no read-start marker. Preserve an acknowledged title against
+        // route snapshots and reads started before rename, not later fresh reads.
+        conversation:
+          this.state.conversation &&
+          (titleRevision !== this.titleRevision || (!!initial && this.titleRevision > 0))
+            ? { ...view.conversation, title: this.state.conversation.title }
+            : view.conversation,
         project: view.project,
         messages,
         pendingTurn: view.pendingTurn,
@@ -554,6 +668,7 @@ export class ChatSession {
           this.set({ creationUnconfirmed: true, issue: "CREATION_UNCONFIRMED" });
           return;
         }
+        if (this.retired) return;
         if (!created.ok) {
           this.set({
             issue:
@@ -566,6 +681,7 @@ export class ChatSession {
         this.set({ conversation: created.data });
         this.dependencies.created(created.data.id);
       }
+      if (this.retired) return;
       if (controller.signal.aborted) {
         this.set({ issue: "CLIENT_ABORTED" });
         return;
@@ -698,6 +814,9 @@ export class ChatSession {
                     ...m,
                     persisted: true,
                     status: m.role === "assistant" ? outcome.status! : "completed",
+                    ...(m.role === "assistant" && outcome.status === "failed"
+                      ? { failure: safeIssue(outcome.code) }
+                      : {}),
                   }
                 : m,
             ),
@@ -720,7 +839,7 @@ export class ChatSession {
       if (!submitted && !retry && !this.state.draft) this.set({ draft: content });
       this.abortController = null;
       this.set({ phase: "idle" });
-      this.dependencies.changed();
+      if (!this.retired) this.dependencies.changed();
     }
   }
 }

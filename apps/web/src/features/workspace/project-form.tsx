@@ -4,7 +4,6 @@ import { Button } from "@solyn/ui/components/button";
 import { Input } from "@solyn/ui/components/input";
 import { Label } from "@solyn/ui/components/label";
 import { Textarea } from "@solyn/ui/components/textarea";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
@@ -22,14 +21,34 @@ export default function ProjectForm({ initial }: { initial?: Project }) {
   const [errors, setErrors] = useState<FieldErrors>({});
   const [error, setError] = useState<ErrorCode | null>(null);
   const [saving, setSaving] = useState(false);
+  const [savedFeedback, setSavedFeedback] = useState(false);
   const [navigating, startTransition] = useTransition();
   const pending = saving || navigating;
   const dirty = name !== (saved?.name ?? "") || description !== (saved?.description ?? "");
   useUnsavedChanges(dirty || pending);
+  function change(field: "name" | "description", value: string) {
+    setSavedFeedback(false);
+    if (field === "name") setName(value);
+    else setDescription(value);
+    setErrors((current) => {
+      if (!current[field]) return current;
+      const parsed = createProjectInput.safeParse({
+        name: field === "name" ? value : name,
+        description: (field === "description" ? value : description) || null,
+      });
+      const next = { ...current };
+      delete next[field];
+      if (!parsed.success) {
+        const message = fieldErrors(parsed.error)[field];
+        if (message) next[field] = message;
+      }
+      return next;
+    });
+  }
 
   return (
     <form
-      className="project-form mt-[28px] w-full [@media(max-width:760px)]:mt-[24px]"
+      className="project-form m-0 w-full"
       noValidate
       data-unsaved={dirty}
       aria-busy={pending}
@@ -47,6 +66,7 @@ export default function ProjectForm({ initial }: { initial?: Project }) {
         }
         setErrors({});
         setError(null);
+        setSavedFeedback(false);
         setSaving(true);
         try {
           const result = saved
@@ -57,6 +77,7 @@ export default function ProjectForm({ initial }: { initial?: Project }) {
             return;
           }
           setSaved(result.data);
+          setSavedFeedback(true);
           setName(result.data.name);
           setDescription(result.data.description ?? "");
           startTransition(() => {
@@ -70,6 +91,20 @@ export default function ProjectForm({ initial }: { initial?: Project }) {
         }
       }}
     >
+      <header className="page-heading -mx-[24px] mb-[20px] flex items-center justify-between gap-[16px] border-b border-solid border-border px-[24px] pb-[16px] [@media(min-width:761px)]:sticky [@media(min-width:761px)]:top-0 [@media(min-width:761px)]:z-10 [@media(min-width:761px)]:-mt-[20px] [@media(min-width:761px)]:bg-canvas [@media(min-width:761px)]:pt-[20px] [@media(max-width:1100px)]:flex-wrap [@media(max-width:760px)]:mx-0 [@media(max-width:760px)]:mb-[16px] [@media(max-width:760px)]:gap-[12px] [@media(max-width:760px)]:px-0">
+        <h1 className="min-w-0 text-[16px] font-[600] tracking-[-0.015em] text-foreground">
+          {initial ? "Edit Project" : "Create Project"}
+        </h1>
+        <div className="ml-auto flex items-center gap-[12px] [@media(max-width:760px)]:gap-[10px]">
+          <p role="status" className="save-indicator text-[13px] text-muted-foreground">
+            {pending ? "Saving…" : dirty ? "Unsaved changes" : savedFeedback ? "Saved" : ""}
+          </p>
+          <Button className="control" type="submit" disabled={pending || (!!saved && !dirty)}>
+            {pending ? "Saving…" : saved ? "Save changes" : "Create project"}
+          </Button>
+        </div>
+      </header>
+      <FieldError id="project-form-error" message={errors.form} />
       <fieldset disabled={pending} className="form-fields grid gap-[20px]">
         <div className="field grid gap-[9px]">
           <Label htmlFor="project-name">
@@ -83,7 +118,7 @@ export default function ProjectForm({ initial }: { initial?: Project }) {
             name="name"
             className="form-control"
             value={name}
-            onChange={(event) => setName(event.target.value)}
+            onChange={(event) => change("name", event.target.value)}
             maxLength={200}
             autoComplete="off"
             required
@@ -103,21 +138,15 @@ export default function ProjectForm({ initial }: { initial?: Project }) {
           <Textarea
             id="project-description"
             name="description"
-            className="form-control description-input min-h-[160px] resize-y"
+            className="form-control description-input h-[160px] max-h-[40dvh] field-sizing-fixed resize-none overflow-y-auto"
             value={description}
-            onChange={(event) => setDescription(event.target.value)}
+            onChange={(event) => change("description", event.target.value)}
             maxLength={5000}
             aria-invalid={!!errors.description}
-            aria-describedby={`project-description-help${errors.description ? " project-description-error" : ""}`}
+            aria-describedby={errors.description ? "project-description-error" : undefined}
             autoComplete="off"
             placeholder="What is this project about?"
           />
-          <p
-            id="project-description-help"
-            className="field-help text-[12px] leading-[1.6] text-muted-foreground"
-          >
-            Optional context for this project.
-          </p>
           <FieldError id="project-description-error" message={errors.description} />
         </div>
       </fieldset>
@@ -127,20 +156,6 @@ export default function ProjectForm({ initial }: { initial?: Project }) {
           Check your projects before retrying, in case the project was created.
         </p>
       ) : null}
-      <div className="form-footer mt-[32px] mb-[14px] flex items-center justify-between gap-[16px] border-t border-border pt-[24px]">
-        <Link
-          className="text-[#b2c7ff] [&:hover]:underline"
-          href={saved ? `/projects/${saved.id}` : "/projects"}
-        >
-          Cancel
-        </Link>
-        <Button className="control" type="submit" disabled={pending || (!!saved && !dirty)}>
-          {pending ? "Saving…" : saved ? "Save changes" : "Create project"}
-        </Button>
-      </div>
-      <p role="status" className="field-help text-[12px] leading-[1.6] text-muted-foreground">
-        {pending ? "Saving your project…" : dirty ? "You have unsaved changes." : ""}
-      </p>
     </form>
   );
 }

@@ -11,15 +11,19 @@ import {
   ChatSessions,
   conversationTitle,
   messageStatus,
+  isGenerationFailure,
+  replyFailureNotice,
   shouldSend,
   type ChatView,
 } from "./client-state";
-import { MessageContent } from "./message-content";
+import { MessageContent, ReplyFailure } from "./message-content";
+import { ConversationRow } from "./conversation-row";
 import { RetrievedNotes } from "./retrieved-notes";
 import { ProposalPreview } from "./proposal-preview";
 import { PROPOSAL_MESSAGE, type ProposalView, type SourceView } from "./contracts";
 import {
   consumeChatResponse,
+  sourcesMatchMessage,
   parseSSE,
   TransportFailure,
   type Attempt,
@@ -202,6 +206,7 @@ const source: SourceView = {
   state: "available",
   noteId: sourceNoteId,
   projectId,
+  projectName: "Authorized <script>project</script>",
   title: "Current <script>alert('title')</script>",
   href: `/projects/${projectId}/notes/${sourceNoteId}`,
   retrievedUpdatedAt: now.toISOString(),
@@ -269,6 +274,10 @@ test("sources transport rejects excessive, malformed, noncanonical or misattribu
     [{ ...source, href: "https://foreign.invalid" }],
     [{ ...source, noteId: "fake" }],
     [{ ...source, updatedAt: "invalid" }],
+    [{ ...source, projectName: undefined }],
+    [{ ...source, projectName: " " }],
+    [{ ...source, projectName: "x".repeat(201) }],
+    [{ ordinal: 1, state: "unavailable", projectName: "Hidden project" }],
     [{ ordinal: 1, state: "unavailable", noteId: sourceNoteId }],
     Array.from({ length: 6 }, (_, index) => ({ ordinal: index + 1, state: "unavailable" })),
     [source, { ...source, ordinal: 2 }],
@@ -517,7 +526,6 @@ test("sources denied or corrupt history hides old links and blocks unsupported a
   }
   for (const view of [
     otherView,
-    { ...sourceHistory(), conversation: { ...conversation, projectId: null } },
     sourceHistory([
       {
         ...source,
@@ -532,6 +540,133 @@ test("sources denied or corrupt history hides old links and blocks unsupported a
   }
 });
 
+const crossSources: SourceView[] = [
+  source,
+  {
+    ...source,
+    ordinal: 2,
+    noteId: assistantId,
+    projectId: conversationId,
+    projectName: "Vega",
+    title: "Second decision",
+    href: `/projects/${conversationId}/notes/${assistantId}`,
+  },
+];
+function generalSourceHistory(sources: SourceView[] = crossSources): ChatView {
+  const view = sourceHistory(sources);
+  return { ...view, conversation: { ...view.conversation, projectId: null }, project: null };
+}
+
+test("sources null scope still validates canonical references, metadata and completed assistant identity", () => {
+  const message = {
+    role: "assistant" as const,
+    status: "completed" as const,
+    sources: crossSources,
+  };
+  assert.equal(sourcesMatchMessage(message, null), true);
+  assert.equal(sourcesMatchMessage(message, projectId), false);
+  for (const sources of [
+    [{ ...source, href: "/forged" }],
+    [{ ...source, projectName: "" }],
+    [{ ...source, projectId: "bad" }],
+    [{ ...source, updatedAt: "bad" }],
+    [source, { ...source, ordinal: 2 }],
+  ])
+    assert.equal(sourcesMatchMessage({ ...message, sources }, null), false);
+  for (const patch of [{ role: "user" as const }, { status: "failed" as const }, { proposal }])
+    assert.equal(sourcesMatchMessage({ ...message, ...patch }, null), false);
+});
+
+test("sources general transport accepts multi-project finish and exact-message replay", async () => {
+  const view = generalSourceHistory();
+  for (const response of [
+    sse(start() + delta() + sourceFinish(crossSources)),
+    Response.json({
+      ok: true,
+      replayed: true,
+      abandoned: false,
+      user: view.messages[0],
+      assistant: view.messages[1],
+    }),
+  ]) {
+    const outcome = await consumeChatResponse(
+      response,
+      attempt,
+      () => {},
+      new AbortController().signal,
+    );
+    const sources =
+      outcome.kind === "finish"
+        ? outcome.sources
+        : outcome.kind === "replay"
+          ? outcome.assistant.sources
+          : undefined;
+    assert.deepEqual(sources, crossSources);
+  }
+});
+
+test("sources general finish survives fresh load, reload and cached-session reconciliation without stale route restoration", async () => {
+  let latest = generalSourceHistory();
+  const f = fixture({
+    existing: true,
+    read: async () => ok(latest),
+    fetch: async () => sse(start() + delta() + sourceFinish(crossSources)),
+  });
+  f.session.setDraft(attempt.content);
+  await f.session.submit();
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, crossSources);
+  await f.session.reload();
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, crossSources);
+  const fresh = fixture({ existing: true, initial: ok(generalSourceHistory()) });
+  assert.deepEqual(fresh.session.getSnapshot().messages.at(-1)!.sources, crossSources);
+  assert.equal(fresh.session.getSnapshot().needsReconcile, false);
+  assert.equal(fresh.reads.length, 0);
+  latest = generalSourceHistory([{ ordinal: 1, state: "unavailable" }, crossSources[1]!]);
+  f.session.invalidateSources();
+  f.session.adopt(ok(generalSourceHistory()));
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, []);
+  await until(() => f.session.getSnapshot().phase === "idle");
+  assert.deepEqual(
+    f.session.getSnapshot().messages.at(-1)!.sources,
+    latest.messages.at(-1)!.sources,
+  );
+  assert.equal(f.sent.length, 1);
+});
+
+test("sources general lost-finish recovery restores sources but denied authorization clears every project", async () => {
+  let denied = false;
+  const f = fixture({
+    existing: true,
+    fetch: async () => sse(start() + delta()),
+    read: async () => (denied ? unavailable() : ok(generalSourceHistory())),
+  });
+  f.session.setDraft(attempt.content);
+  await f.session.submit();
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, crossSources);
+  assert.equal(f.sent.length, 1);
+  denied = true;
+  await f.session.reload();
+  assert.deepEqual(f.session.getSnapshot().messages.at(-1)!.sources, []);
+  assert.equal(f.session.getSnapshot().needsReconcile, true);
+});
+
+test("sources general footer labels both authorized projects and hides unavailable project metadata", () => {
+  const message = { ...generalSourceHistory().messages[1]!, persisted: true };
+  const html = renderToStaticMarkup(<RetrievedNotes message={message} />);
+  assert.match(html, /Authorized &lt;script&gt;project/);
+  assert.match(html, /Vega/);
+  assert.equal((html.match(/<a /g) ?? []).length, 2);
+  assert.doesNotMatch(html, /<script>/);
+  const unavailableHtml = renderToStaticMarkup(
+    <RetrievedNotes
+      message={{ ...message, sources: [{ ordinal: 1, state: "unavailable" }, crossSources[1]!] }}
+    />,
+  );
+  assert.doesNotMatch(unavailableHtml, /Authorized|Current|88888888/);
+  assert.match(unavailableHtml, /Note unavailable/);
+  assert.match(unavailableHtml, /Vega/);
+});
+
 test("sources footer escapes titles, preserves unavailable positions and does not link model citations", () => {
   const message = { ...sourceHistory().messages[1]!, persisted: true };
   const html = renderToStaticMarkup(
@@ -541,6 +676,7 @@ test("sources footer escapes titles, preserves unavailable positions and does no
   );
   assert.match(html, /Retrieved notes/);
   assert.match(html, /Current &lt;script&gt;/);
+  assert.match(html, /Authorized &lt;script&gt;project/);
   assert.match(html, /Note unavailable/);
   assert.match(html, /current note versions, not saved snapshots/);
   assert.equal((html.match(/<a /g) ?? []).length, 1);
@@ -670,6 +806,126 @@ test("pre-stream JSON errors discard server message details; replay validates pe
       new AbortController().signal,
     ),
   );
+});
+
+test("acknowledged rename changes cached title only, while delete retires and evicts stale sessions", () => {
+  const cache = new ChatSessions();
+  const f = fixture({ existing: true });
+  cache.select(`conversation:${conversationId}`, () => f.session);
+  f.session.setDraft("Keep my current draft");
+  const before = f.session.getSnapshot();
+  cache.rename(conversationId, "Renamed");
+  assert.deepEqual(f.session.getSnapshot(), {
+    ...before,
+    conversation: { ...before.conversation!, title: "Renamed" },
+  });
+  assert.equal(f.sent.length + f.reads.length + f.confirms.length, 0);
+  cache.remove(conversationId);
+  const retired = f.session.getSnapshot();
+  assert.equal(retired.conversation, null);
+  assert.deepEqual(retired.messages, []);
+  assert.equal(retired.draft, "");
+  assert.equal(f.session.canSend, false);
+  assert.equal(f.session.canRetry, false);
+  assert.ok(cache.isDeleted(conversationId));
+  cache.rename(conversationId, "Late stale rename");
+  f.session.adopt(ok(f.view()));
+  assert.equal(f.session.getSnapshot().conversation, null);
+  const stale = cache.select(
+    `conversation:${conversationId}`,
+    () => fixture({ existing: true }).session,
+  );
+  assert.equal(stale.getSnapshot().conversation, null);
+  assert.equal(stale.canSend, false);
+  const lateCreation = fixture().session;
+  assert.equal(cache.promote("new:general", conversationId, lateCreation), false);
+  assert.equal(lateCreation.canSend, false);
+});
+
+test("acknowledged rename survives older reads/RSC while a subsequent fresh read can update the title", async () => {
+  let release!: (value: Awaited<ReturnType<Dependencies["read"]>>) => void;
+  const pending = new Promise<Awaited<ReturnType<Dependencies["read"]>>>((resolve) => {
+    release = resolve;
+  });
+  let hold = true;
+  const f = fixture({ existing: true, read: async () => (hold ? pending : ok(f.view())) });
+  const reading = f.session.reload();
+  f.session.renameTitle(conversationId, "Acknowledged title");
+  release(ok(f.view()));
+  await reading;
+  assert.equal(f.session.getSnapshot().conversation?.title, "Acknowledged title");
+  f.session.adopt(ok(f.view()));
+  await until(() => !f.session.getSnapshot().needsReconcile);
+  assert.equal(f.session.getSnapshot().conversation?.title, "Acknowledged title");
+  hold = false;
+  await f.session.reload();
+  assert.equal(f.session.getSnapshot().conversation?.title, f.view().conversation.title);
+});
+
+test("retiring an active session aborts its request and prevents late stream/read state from returning", async () => {
+  let release!: (value: Response) => void;
+  let signal!: AbortSignal;
+  const wait = new Promise<Response>((resolve) => {
+    release = resolve;
+  });
+  const f = fixture({
+    existing: true,
+    fetch: async (_attempt, value) => {
+      signal = value;
+      return wait;
+    },
+  });
+  f.session.setDraft(attempt.content);
+  const sending = f.session.submit();
+  await until(() => f.sent.length === 1);
+  f.session.retire();
+  assert.equal(signal.aborted, true);
+  release(sse(start() + delta() + finish()));
+  await sending;
+  assert.deepEqual(f.session.getSnapshot().messages, []);
+  assert.equal(f.session.getSnapshot().phase, "idle");
+  assert.equal(f.reads.length, 0);
+  f.session.setDraft("Cannot revive");
+  await f.session.submit();
+  assert.equal(f.sent.length, 1);
+  let readRelease!: (view: Awaited<ReturnType<Dependencies["read"]>>) => void;
+  const readWait = new Promise<Awaited<ReturnType<Dependencies["read"]>>>((resolve) => {
+    readRelease = resolve;
+  });
+  const reading = fixture({ existing: true, read: async () => readWait });
+  const loading = reading.session.reload();
+  reading.session.retire();
+  readRelease(ok(reading.view()));
+  await loading;
+  assert.equal(reading.session.getSnapshot().conversation, null);
+  assert.deepEqual(reading.session.getSnapshot().messages, []);
+});
+
+test("conversation rows keep links usable, truncate titles and expose management only for Main Chat", () => {
+  const props = {
+    conversation,
+    rename: async () => ok(conversation),
+    remove: async () => ok({ id: conversationId }),
+    changed: () => {},
+  };
+  const main = renderToStaticMarkup(
+    <ConversationRow {...props} conversation={{ ...conversation, title: "<unsafe> long title" }} />,
+  );
+  assert.match(main, /aria-label="Manage chat: &lt;unsafe&gt; long title"/);
+  assert.match(main, /aria-haspopup="menu"/);
+  assert.match(main, /truncate/);
+  assert.match(main, /shrink-0/);
+  assert.match(main, new RegExp(`/chat\\?conversationId=${conversationId}`));
+  const scoped = renderToStaticMarkup(
+    <ConversationRow {...props} conversation={{ ...conversation, projectId }} showScope />,
+  );
+  assert.doesNotMatch(scoped, /Manage chat:/);
+  assert.match(scoped, /Project Chat/);
+  const row = readFileSync(new URL("./conversation-row.tsx", import.meta.url), "utf8");
+  assert.match(row, /pending\.current = true/);
+  assert.match(row, /window\.confirm/);
+  assert.match(row, /Already-saved project notes and their revision history will be kept/);
+  assert.match(row, /This cannot be undone/);
 });
 
 test("opening a new chat does not create anything; first submit creates once and sends fixed scope/title", async () => {
@@ -959,6 +1215,119 @@ test("provider failure keeps its safe reason and displays saved failed partial t
   assert.doesNotMatch(JSON.stringify(f.session.getSnapshot()), /SENTINEL/);
 });
 
+test("confirmed generation failures render natural UI-only inline notices, retaining partial output and exact retry protocol", async () => {
+  for (const code of [
+    "RATE_LIMITED",
+    "PROVIDER_TIMEOUT",
+    "PROVIDER_NETWORK",
+    "PROVIDER_REJECTED",
+    "EMPTY_RESPONSE",
+    "OUTPUT_LIMIT",
+  ] as const) {
+    for (const partial of ["", "Partial answer"]) {
+      let f!: ReturnType<typeof fixture>;
+      f = fixture({
+        existing: true,
+        fetch: async () => {
+          f.save("failed", partial);
+          return sse(
+            start() +
+              (partial ? delta(partial) : "") +
+              frame("error", {
+                code,
+                message: "private-provider-sentinel",
+                persistence: "confirmed",
+                status: "failed",
+              }),
+          );
+        },
+      });
+      f.session.setDraft(attempt.content);
+      await f.session.submit();
+      const state = f.session.getSnapshot();
+      const response = state.messages.at(-1)!;
+      const notice = replyFailureNotice(
+        response,
+        state.needsReconcile || !!state.attempt,
+        f.session.canSend,
+      );
+      assert.ok(notice);
+      assert.equal(response.failure, code);
+      assert.equal(response.content, partial); // No fabricated answer persisted or appended.
+      assert.equal(state.attempt, null);
+      assert.equal(f.session.canRetry, false);
+      assert.equal(f.session.canSend, true);
+      assert.ok(isGenerationFailure(code));
+      if (partial) assert.match(notice, /incomplete/);
+      if (code === "RATE_LIMITED") assert.match(notice, /temporarily busy.*try again later/);
+      else if (code === "PROVIDER_TIMEOUT") assert.match(notice, /took too long.*try again/);
+      else assert.match(notice, /couldn't complete.*send your message again/);
+      const markup = renderToStaticMarkup(
+        <>
+          {partial ? <MessageContent content={partial} /> : null}
+          <ReplyFailure notice={notice} />
+        </>,
+      );
+      assert.match(markup, /data-ui-notice="failure"/);
+      assert.match(markup, /aria-label="Reply status"/);
+      assert.doesNotMatch(markup, /role="alert"|private-provider|border-\[#71404c\]/);
+      await f.session.submit(true); // Terminal failure never re-infers the old ID.
+      assert.equal(f.sent.length, 1);
+      assert.equal(f.ids(), 1);
+    }
+  }
+});
+
+test("history-only failures never invent a provider cause, and uncertain delivery never invites new generation", async () => {
+  const saved = { ...pair("failed", "Partial")[1]!, persisted: true };
+  assert.match(replyFailureNotice(saved, false, true)!, /couldn't complete.*incomplete/);
+  assert.doesNotMatch(replyFailureNotice(saved, false, true)!, /busy|too long/);
+  assert.equal(replyFailureNotice({ ...saved, status: "pending" }, false, true), null);
+  assert.equal(replyFailureNotice({ ...saved, persisted: false }, false, true), null);
+  assert.equal(replyFailureNotice({ ...saved, status: "stopped" }, false, true), null);
+  assert.equal(replyFailureNotice({ ...saved, role: "user" }, false, true), null);
+  assert.match(replyFailureNotice(saved, true, false)!, /Reload saved history before continuing/);
+  assert.doesNotMatch(replyFailureNotice(saved, true, false)!, /Please send|Please try/);
+  const f = fixture({
+    existing: true,
+    fetch: async () =>
+      sse(
+        start() +
+          delta("Partial") +
+          frame("error", { code: "PERSISTENCE_FAILED", persistence: "unconfirmed" }),
+      ),
+    read: async () => unavailable(),
+  });
+  f.session.setDraft(attempt.content);
+  await f.session.submit();
+  assert.equal(f.session.getSnapshot().needsReconcile, true);
+  assert.equal(f.session.canSend, false);
+  assert.equal(f.session.canRetry, false);
+  assert.equal(replyFailureNotice(f.session.getSnapshot().messages.at(-1)!, true, false), null);
+  assert.equal(f.session.getSnapshot().messages.at(-1)!.content, "Partial");
+  assert.equal(f.sent.length, 1);
+  assert.ok(!isGenerationFailure("UNAUTHENTICATED") && !isGenerationFailure("PERSISTENCE_FAILED"));
+});
+
+test("confirmed terminal failure with unsuccessful history check asks for recovery, not duplicate generation", async () => {
+  const f = fixture({
+    existing: true,
+    fetch: async () =>
+      sse(
+        start() +
+          frame("error", { code: "RATE_LIMITED", persistence: "confirmed", status: "failed" }),
+      ),
+    read: async () => unavailable(),
+  });
+  f.session.setDraft(attempt.content);
+  await f.session.submit();
+  const response = f.session.getSnapshot().messages.at(-1)!;
+  const notice = replyFailureNotice(response, true, f.session.canSend)!;
+  assert.match(notice, /Reload saved history/);
+  assert.doesNotMatch(notice, /Please send|Please try/);
+  assert.equal(f.sent.length, 1);
+});
+
 test("network/read failure preserves same-ID recovery and blocks new turns until history is checked", async () => {
   const f = fixture({
     existing: true,
@@ -1202,8 +1571,10 @@ test("chat textarea merging keeps the outer-border focus policy and 72px minimum
     "bg-transparent",
     "shadow-none",
     "outline-none",
-    "resize-y",
-    "field-sizing-content",
+    "resize-none",
+    "field-sizing-fixed",
+    "h-[96px]",
+    "overflow-y-auto",
     "rounded-[4px]",
     "px-[4px]",
     "py-[2px]",
@@ -1220,6 +1591,25 @@ test("chat textarea merging keeps the outer-border focus policy and 72px minimum
     ![...classes].some((value) => value.includes("ring-1") || value.includes("min-h-[44px]")),
   );
   assert.ok(chatClasses("chat-composer").has("focus-within:border-ring"));
+});
+
+test("popup typography/spacing remain scoped and proposal textareas use fixed scrolling surfaces", () => {
+  const css = readFileSync(new URL("../../index.css", import.meta.url), "utf8");
+  assert.match(css, /\.project-chat-panel \.chat-prose\s*\{\s*font-size: 13px/);
+  assert.match(css, /\.project-chat-panel \.chat-message\s*\{\s*margin-bottom: 18px/);
+  const popup = readFileSync(new URL("./project-chat-popup.tsx", import.meta.url), "utf8");
+  assert.ok(popup.includes("right-[max(28px,env(safe-area-inset-right))]"));
+  assert.ok(popup.includes("[--project-chat-inset:28px]"));
+  assert.ok(popup.includes("[@media(max-width:760px)]:[--project-chat-inset:16px]"));
+  assert.ok(popup.includes("shadow-[0_20px_64px_#0006,0_4px_16px_#0004]"));
+  const markup = renderToStaticMarkup(
+    <ProposalPreview proposal={proposal} loadProjects={async () => ok([])} change={() => {}} />,
+  );
+  const textarea = markup.match(/<textarea[^>]*>/)?.[0];
+  assert.ok(textarea);
+  assert.ok(textarea.includes("field-sizing-fixed"));
+  assert.ok(textarea.includes("resize-none") && textarea.includes("overflow-y-auto"));
+  assert.ok(!textarea.includes("field-sizing-content") && !textarea.includes("resize-y"));
 });
 
 test("literal role utilities preserve assistant reading width and user alignment, bubble and responsive caps", () => {
@@ -1329,6 +1719,73 @@ function proposalView(): ChatView {
       .messages.map((m) => ({ ...m, proposal: m.role === "assistant" ? proposal : null })),
   };
 }
+
+test("dismissal source invalidation and reopen reconciliation preserve drafts and edited proposals without writes", async () => {
+  const view = proposalView();
+  const f = fixture({ existing: true, initial: ok(view), read: async () => ok(view) });
+  f.session.setDraft("Keep this unsent message");
+  f.session.editProposal(proposal.id, { title: "Edited while reviewing" });
+  f.session.invalidateSources();
+  assert.equal(f.session.getSnapshot().needsReconcile, true);
+  assert.equal(f.reads.length, 0);
+  await f.session.reload(false, false);
+  assert.equal(f.session.getSnapshot().needsReconcile, false);
+  assert.equal(f.session.getSnapshot().draft, "Keep this unsent message");
+  assert.equal(f.session.getSnapshot().proposalEdits[proposal.id]!.title, "Edited while reviewing");
+  assert.equal(f.session.hasProposalChanges, true);
+  assert.deepEqual(f.creates, []);
+  assert.deepEqual(f.confirms, []);
+  assert.deepEqual(f.sent, []);
+});
+
+test("navigation focuses Main Chat while preserving discoverable legacy project history and popup entry", () => {
+  const shell = readFileSync(
+    new URL("../../components/workspace-shell.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(shell, /href="\/chat"\s+title="Main Chat — search notes across your projects"/);
+  assert.match(shell, /Recent Main Chat threads/);
+  const layout = readFileSync(new URL("../../app/(workspace)/layout.tsx", import.meta.url), "utf8");
+  assert.match(layout, /chat\.listConversations\(\{ limit: 5, projectId: null \}\)/);
+  assert.match(layout, /recentConversations=\{recent\.ok \? recent\.data : \[\]\}/);
+  const screen = readFileSync(new URL("./chat-screen.tsx", import.meta.url), "utf8");
+  assert.match(screen, /includeProjectChats \? \{\} : \{ projectId: null \}/);
+  assert.match(screen, /Include project chats/);
+  assert.match(screen, /Main Chat · Search notes across your projects/);
+  assert.match(screen, /<ConversationRow/); // Canonical history links are covered by the row render test.
+  assert.match(screen, /No Main Chat threads yet/);
+  const page = readFileSync(
+    new URL("../../app/(workspace)/projects/[projectId]/page.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(page, /<ProjectChatPopup project=\{\{ id: project\.id, name: project\.name \}\}/);
+  assert.doesNotMatch(page, /\/chat\?projectId/);
+  const chatPage = readFileSync(
+    new URL("../../app/(workspace)/chat/page.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(chatPage, /getConversation\(\{ conversationId, latest: true, limit: 50 \}\)/);
+  assert.match(chatPage, /workspace\.getProject\(\{ projectId \}\)/);
+  assert.match(chatPage, /<ChatScreen project=\{\{ id: project\.id, name: project\.name \}\}/);
+});
+
+test("popup owner wiring keeps Main Chat chrome and scrolling while hiding popup conversation controls", () => {
+  const screen = readFileSync(new URL("./chat-screen.tsx", import.meta.url), "utf8");
+  assert.match(screen, /!compact && \(/);
+  assert.match(screen, /!compact && activeSession\.current === session/);
+  assert.match(
+    screen,
+    /if \(popupOpen === false \|\| wasDismissed\.current\) session\.invalidateSources\(\)/,
+  );
+  assert.match(screen, /if \(popupOpen === false\) return/);
+  assert.match(screen, /compact \|\| window\.matchMedia/);
+  const popup = readFileSync(new URL("./project-chat-popup.tsx", import.meta.url), "utf8");
+  assert.match(popup, /<ProjectPopup key=\{project\.id\}/);
+  assert.match(popup, /hidden=\{!open\} inert=\{!open\}/);
+  assert.match(popup, /aria-modal="false"/);
+  assert.match(popup, /listConversations\(\{ projectId: project\.id, limit: 1, offset: 0 \}\)/);
+  assert.doesNotMatch(popup, /createConversation|localStorage|sessionStorage|window\.scrollTo/);
+});
 
 test("proposal finish validates source identity and exposes a preview only after matching persisted finish", async () => {
   const result = await consumeChatResponse(
@@ -1490,7 +1947,12 @@ test("preview renders escaped editable fields and nullable date without implicit
   );
   assert.match(edited, /data-unsaved="true"/);
   assert.match(edited, /Local changes — not saved/);
-  assert.match(edited, /role="alert"/);
+  assert.match(edited, /Please enter a note title\./);
+  assert.match(edited, /Please write your note before saving\./);
+  assert.match(edited, /Please enter a valid date\./);
+  assert.match(edited, /aria-invalid="true"/);
+  assert.match(edited, /aria-describedby="proposal-[^"]+-content-error"/);
+  assert.doesNotMatch(edited, /invalid Unicode|NUL|Too small|Invalid input/);
   const scoped = renderToStaticMarkup(
     <ProposalPreview
       proposal={{ ...proposal, scopedProject: { id: projectId, name: "Owned project" } }}
@@ -1516,6 +1978,27 @@ function savedProposalView(): ChatView {
     messages: view.messages.map((m) => ({ ...m, proposal: m.proposal ? savedProposal : null })),
   };
 }
+
+test("late confirmation acknowledgements cannot resurrect a deleted session or its receipts", async () => {
+  let release!: (result: Awaited<ReturnType<NonNullable<Dependencies["confirm"]>>>) => void;
+  const waiting = new Promise<Awaited<ReturnType<NonNullable<Dependencies["confirm"]>>>>(
+    (resolve) => {
+      release = resolve;
+    },
+  );
+  const f = fixture({ existing: true, initial: ok(proposalView()), confirm: async () => waiting });
+  f.session.editProposal(proposal.id, { projectId });
+  const saving = f.session.confirmProposal(proposal.id);
+  f.session.retire();
+  release(ok(savedReceipt));
+  await saving;
+  assert.deepEqual(f.session.getSnapshot().proposalReceipts, {});
+  assert.deepEqual(f.session.getSnapshot().messages, []);
+  await f.session.confirmProposal(proposal.id);
+  await f.session.recoverProposal(proposal.id);
+  assert.equal(f.confirms.length, 1);
+  assert.equal(f.recoveries.length, 0);
+});
 
 test("explicit confirmation uses canonical edited fields and synchronously blocks double clicks and edits while saving", async () => {
   let release!: (result: Awaited<ReturnType<NonNullable<Dependencies["confirm"]>>>) => void;
@@ -1641,7 +2124,11 @@ test("off-page unresolved saves remain dirty and expose the session guard to sig
   const source = readFileSync(new URL("./chat-screen.tsx", import.meta.url), "utf8");
   const composer = source.match(/<form\s+ref=\{form\}[\s\S]*?onSubmit=/)?.[0];
   assert.ok(composer);
-  assert.match(composer, /data-unsaved=\{session\.hasProposalChanges \? "true" : "false"\}/);
+  assert.match(composer, /data-unsaved=\{dirty \? "true" : "false"\}/);
+  assert.match(
+    source,
+    /const dirty = session\.hasProposalChanges \|\| \(compact && !!state\.draft\)/,
+  );
 
   await f.session.recoverProposal(proposal.id);
   assert.equal(f.session.hasProposalChanges, false);

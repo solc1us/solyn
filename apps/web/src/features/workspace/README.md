@@ -20,6 +20,22 @@
 
 Run `bun test apps/web/src/features/workspace/frontend.test.tsx` for offline reducer, validation, pagination, date and safe-rendering coverage. These tests do **not** establish authenticated browser or PostgreSQL integration.
 
+## P4.6F form refinement
+
+App-owned `.form-control` fields (including note search and proposal edits) and the chat composer now use background `#1c1e25` and normal border `#363a42`. Normal-border rules exclude focused/invalid fields so existing blue focus and error-first red borders retain authority. Shared primitives and login remain unchanged.
+
+Note and Project save actions sit at the upper right, with adjacent quiet unsaved/saving/meaningful-saved feedback. Clean forms have no permanent saved/new-state filler. Project's redundant bottom Cancel/footer and optional-description helper, Note's plain-text helper and unsaved new-note metadata filler are removed; labels, date guidance, saved timestamps/version, contextual validation, mutation errors and unsaved guards remain. Note content is now approximately 160px high (viewport capped), non-resizable and internally scrolling; full-width forms, exact content/date submission, optimistic versions and explicit conflict replacement are unchanged.
+
+## P4.6E UI refinement
+
+New/Edit Note now fill their existing canvas content width, like Project Forms. Workspace/proposal fields share rounded primitive borders and an app-local raised neutral surface, with border-only focus and error-first invalid styling. Login and the shared Input/Textarea primitives are unchanged. Description, note content, read-only comparison and proposal textareas have fixed, viewport-bounded heights with internal scrolling and no drag resizing; the chat composer follows the same fixed-sizing policy.
+
+`fieldErrors` maps the existing Zod issue paths/codes/maximums to contextual English without displaying raw schema messages or internal paths. Workspace forms remain submit-first, focus the first invalid field, and revalidate only a field with an existing error as it changes. Optional native date input bad/range validity also receives the same safe date message rather than silently treating an incomplete typed date as blank. Shared schema rules/limits, exact draft content, mutation error handling, confirmed versions, comparison-only reads, explicit replacement and unsaved guards remain unchanged.
+
+Project Detail renders the description once, directly below its title inside the header above its divider. The expanded header scrolls normally (rather than pinning potentially 5,000 characters over the notes); the Created date stays below it in the content area. Existing project actions and the contextual popup are retained.
+
+Offline tests and synthetic mounted-browser/style checks are not authenticated Next/RSC or live PostgreSQL evidence; PM visual/mobile acceptance remains separate.
+
 ## Contracts
 
 Every operation returns `Promise<WorkspaceResult<T>>`: either `{ ok: true, data }` or `{ ok: false, error: { code, message } }`. Codes are `UNAUTHENTICATED`, `INVALID_INPUT`, `NOT_FOUND`, `CONFLICT`, and `UNAVAILABLE`. Missing and foreign-owned resources deliberately share `NOT_FOUND`. Unexpected session/driver errors return a generic message, without SQL or secrets.
@@ -42,6 +58,15 @@ Inputs are accepted as `unknown` at the boundary and validated with strict Zod s
 Limits: project names 200 characters, descriptions 5,000, titles 300, content 100,000 (JavaScript string lengths). Names/titles are trimmed and must be nonblank; content must contain non-whitespace text and is stored **without trimming or transformation**. Dates are nullable, strictly validated `YYYY-MM-DD` calendar dates, years 0001–9999, never defaulted from creation time. Omitted date/description on creation becomes null; omission on update preserves the current value, explicit null clears it.
 
 Lists default to 50 rows, maximum 100, with offset 0–100,000. Ordering is `updatedAt DESC, id DESC`. Offset pagination is deterministic for a fixed dataset, not a stable snapshot across concurrent edits. DTOs expose explicitly selected domain fields, not owner IDs or auth data; timestamps are Date values supported by React Server Function serialization.
+
+## Read-only note search
+
+- Existing `searchNotes({ projectId, query, limit?, offset? })` remains project-scoped, including its owned-project precheck and shared `NOT_FOUND` response for foreign/missing projects. Its UI and chat callers are unchanged.
+- `searchOwnedNotes({ query, projectId?, limit?, offset? })` is a separate backend-only operation for all projects of the fresh server-session owner. An optional project UUID narrows the same ownership-filtered query; foreign/missing filters return `{ ok: true, data: [] }`, without revealing project existence or names. No client action or AI integration is added in P4.6A.
+- Both strict contracts accept a trimmed literal query of 1–200 JavaScript string units, limit 1–50 (default 20), and offset 0–100,000 (default 0). Unknown identity/override fields are rejected. Search is case-insensitive title-or-content substring matching with escaped `%`, `_`, `!` and literal backslashes, never tokenized or semantic search.
+- Owner-wide results are `{ id, projectId, projectName, title, excerpt, noteDate, updatedAt }`. `projectName` comes from the same inner-joined owned parent, excluding absent/inaccessible parents. No owner IDs, project descriptions or full note bodies are returned. Excerpts retain the 320-PostgreSQL-character bound and at most 80 characters before a content match; note dates remain nullable and distinct from edit timestamps.
+- Ordering across projects is title match first, then `notes.updatedAt DESC, notes.id DESC`. Pagination is deterministic for an unchanged dataset, not a snapshot across edits. SQL enforces row/excerpt bounds; a limit bounds returned rows, not all search work.
+- Existing owner/project B-tree indexes support scope/join filtering, but do not accelerate arbitrary leading-wildcard text matching. No migration/index change is required for this MVP baseline; live plans/performance and persisted cross-account isolation are not established by the scripted tests. P4.6B now integrates this read into Main Chat and authorizes cross-project source projections; fixed-project chats retain their original scope.
 
 ## Note revision transaction
 

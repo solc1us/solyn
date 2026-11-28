@@ -53,7 +53,7 @@ export default function NoteSearch({
             type="search"
             maxLength={200}
             value={input}
-            className="min-w-0 [@media(max-width:760px)]:col-span-2"
+            className="form-control min-w-0 [@media(max-width:760px)]:col-span-2"
             onChange={(event) => {
               setInput(event.target.value);
               if (!event.target.value.trim()) search.clear();

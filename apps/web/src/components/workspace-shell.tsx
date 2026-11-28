@@ -3,8 +3,11 @@
 import { Button } from "@solyn/ui/components/button";
 import { FolderClosed, House, Menu, MessageSquare, X } from "lucide-react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { startTransition, useEffect, useRef, useState } from "react";
+
+import { renameConversation, deleteConversation } from "../features/chat/actions";
+import { ConversationRow, useConversationRows } from "../features/chat/conversation-row";
 
 import SignOutButton from "./sign-out-button";
 
@@ -31,6 +34,8 @@ export default function WorkspaceShell({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+  const router = useRouter();
+  const threads = useConversationRows(recentConversations);
   const [open, setOpen] = useState(false);
   const toggle = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -109,34 +114,32 @@ export default function WorkspaceShell({
           <Link
             className="nav-item flex min-h-[36px] items-center gap-[12px] rounded-[7px] px-[12px] py-[7px] text-[14px] text-muted-foreground aria-[current=page]:bg-(--selected) aria-[current=page]:text-foreground aria-[current=page]:shadow-[inset_2px_0_var(--brand)] [&:hover:not([aria-current=page])]:bg-(--hover) [&:hover:not([aria-current=page])]:text-foreground [@media(max-width:760px)]:min-h-[44px] [@media(pointer:coarse)]:min-h-[44px]"
             href="/chat"
+            title="Main Chat — search notes across your projects"
             aria-current={pathname === "/chat" ? "page" : undefined}
           >
             <MessageSquare size={17} aria-hidden="true" />
             Ask Solyn
           </Link>
         </nav>
-        {recentConversations.length ? (
+        {threads.length ? (
           <nav
             className="recent-conversations mt-[20px] grid gap-[3px]"
-            aria-label="Recent conversations"
+            aria-label="Recent Main Chat threads"
             onClick={(event) => {
               if (event.target instanceof Element && event.target.closest("a")) setOpen(false);
             }}
           >
             <p className="mx-[12px] mb-[4px] text-[12px] text-muted-foreground">
-              Recent conversations
+              Recent Main Chat threads
             </p>
-            {recentConversations.map((conversation) => (
-              <Link
-                className="nav-item grid min-h-[42px] items-center gap-px rounded-[7px] px-[12px] py-[7px] text-[13px] text-muted-foreground [&:hover]:bg-(--hover) [&:hover]:text-foreground [@media(max-width:760px)]:min-h-[44px]"
+            {threads.map((conversation) => (
+              <ConversationRow
                 key={conversation.id}
-                href={`/chat?conversationId=${conversation.id}`}
-              >
-                <span className="truncate">{conversation.title}</span>
-                <small className="text-[11px] text-muted-foreground">
-                  {conversation.projectId ? "Project chat" : "General chat"}
-                </small>
-              </Link>
+                conversation={conversation}
+                rename={renameConversation}
+                remove={deleteConversation}
+                changed={() => startTransition(() => router.refresh())}
+              />
             ))}
           </nav>
         ) : null}

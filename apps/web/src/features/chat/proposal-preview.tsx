@@ -7,6 +7,8 @@ import { Textarea } from "@solyn/ui/components/textarea";
 import Link from "next/link";
 import { useState } from "react";
 
+import { FieldError } from "../workspace/feedback";
+import { fieldErrors } from "../workspace/presentation";
 import type { listProposalProjects } from "./actions";
 import {
   originalProposalEdit,
@@ -72,6 +74,7 @@ export function ProposalPreview({
     content: value.content,
     noteDate: value.noteDate || null,
   });
+  const errors = valid.success ? {} : fieldErrors(valid.error);
   const prefix = `proposal-${proposal.id}`;
   if (proposal.status === "confirmed" && proposal.receipt)
     return (
@@ -90,7 +93,7 @@ export function ProposalPreview({
     );
   return (
     <form
-      className="mt-[16px] grid gap-[12px] rounded-[7px] border border-border bg-canvas p-[16px]"
+      className="proposal-preview mt-[16px] grid min-w-0 gap-[12px] rounded-[7px] border border-border bg-canvas p-[16px]"
       aria-label="Note draft preview"
       data-unsaved={dirty || locked ? "true" : "false"}
       onSubmit={(event) => event.preventDefault()}
@@ -118,7 +121,7 @@ export function ProposalPreview({
           <Label htmlFor={`${prefix}-project`}>Project (required before saving)</Label>
           <select
             id={`${prefix}-project`}
-            className="min-h-[36px] w-full rounded-[7px] border border-input bg-canvas px-[10px] text-[14px]"
+            className="form-control min-h-[36px] w-full min-w-0 rounded-[7px] border border-input bg-canvas px-[10px] text-[16px] focus:border-ring"
             value={value.projectId}
             disabled={locked}
             onChange={(event) => change({ projectId: event.target.value })}
@@ -188,28 +191,38 @@ export function ProposalPreview({
         <Label htmlFor={`${prefix}-title`}>Title</Label>
         <Input
           id={`${prefix}-title`}
+          className="form-control"
+          aria-invalid={!!errors.title}
+          aria-describedby={errors.title ? `${prefix}-title-error` : undefined}
           value={value.title}
           disabled={locked}
           maxLength={300}
           onChange={(event) => change({ title: event.target.value })}
         />
+        <FieldError id={`${prefix}-title-error`} message={errors.title} />
       </div>
       <div className="grid gap-[6px]">
         <Label htmlFor={`${prefix}-content`}>Content</Label>
         <Textarea
           id={`${prefix}-content`}
-          className="min-h-[160px] resize-y"
+          className="form-control h-[160px] max-h-[40dvh] field-sizing-fixed resize-none overflow-y-auto"
           rows={6}
+          aria-invalid={!!errors.content}
+          aria-describedby={errors.content ? `${prefix}-content-error` : undefined}
           value={value.content}
           disabled={locked}
           maxLength={100_000}
           onChange={(event) => change({ content: event.target.value })}
         />
+        <FieldError id={`${prefix}-content-error`} message={errors.content} />
       </div>
       <div className="grid gap-[6px]">
         <Label htmlFor={`${prefix}-date`}>Note date (optional)</Label>
         <Input
           id={`${prefix}-date`}
+          className="form-control"
+          aria-invalid={!!errors.noteDate}
+          aria-describedby={`${prefix}-date-help${errors.noteDate ? ` ${prefix}-date-error` : ""}`}
           type="date"
           min="0001-01-01"
           max="9999-12-31"
@@ -217,16 +230,11 @@ export function ProposalPreview({
           disabled={locked}
           onChange={(event) => change({ noteDate: event.target.value })}
         />
-        <p className="text-[12px] text-muted-foreground">
+        <p id={`${prefix}-date-help`} className="text-[12px] text-muted-foreground">
           Leave blank if the historical date is unknown.
         </p>
+        <FieldError id={`${prefix}-date-error`} message={errors.noteDate} />
       </div>
-      {!valid.success && (value.projectId || proposal.scopedProject) ? (
-        <p role="alert" className="text-[13px] text-destructive">
-          Check the title, nonblank content and calendar date. Text cannot contain invalid Unicode
-          or NUL.
-        </p>
-      ) : null}
       {saveState ? (
         <div role="status" className="text-[13px]">
           {saveState.phase === "saving"

@@ -10,7 +10,7 @@ export default async function WorkspaceLayout({ children }: { children: React.Re
   if (!session?.user) redirect("/login");
   // Chat schema may not be installed yet. Its unavailable history must not
   // prevent existing project/note workflows from rendering.
-  const recent = await chat.listConversations({ limit: 5 });
+  const recent = await chat.listConversations({ limit: 5, projectId: null });
   return (
     <WorkspaceShell
       key={session.user.id}

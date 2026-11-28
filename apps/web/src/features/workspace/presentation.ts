@@ -38,7 +38,36 @@ export function fieldErrors(error: ZodError): FieldErrors {
   const errors: FieldErrors = {};
   for (const issue of error.issues) {
     const field = String(issue.path[0] ?? "form");
-    errors[field] ??= issue.message;
+    const maximum = issue.code === "too_big" ? issue.maximum.toLocaleString("en-US") : null;
+    // UI copy only: the shared schemas and their limits remain authoritative.
+    // Never render schema messages, supplied values or internal paths.
+    switch (field) {
+      case "name":
+        errors.name ??= maximum
+          ? `The project name is too long. Maximum ${maximum} characters.`
+          : "Please enter a project name.";
+        break;
+      case "description":
+        errors.description ??= maximum
+          ? `The description is too long. Maximum ${maximum} characters.`
+          : "Please enter a valid description.";
+        break;
+      case "title":
+        errors.title ??= maximum
+          ? `The note title is too long. Maximum ${maximum} characters.`
+          : "Please enter a note title.";
+        break;
+      case "content":
+        errors.content ??= maximum
+          ? `The note is too long. Maximum ${maximum} characters.`
+          : "Please write your note before saving.";
+        break;
+      case "noteDate":
+        errors.noteDate ??= "Please enter a valid date.";
+        break;
+      default:
+        errors.form ??= "Please review the form and try again.";
+    }
   }
   return errors;
 }

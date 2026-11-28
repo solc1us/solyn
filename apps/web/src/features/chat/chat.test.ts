@@ -172,6 +172,8 @@ const turnInput = { conversationId, turnId };
 const operations = (service: ReturnType<typeof createChatService>) => [
   () => service.createConversation({ title: "Conversation" }),
   () => service.listConversations(),
+  () => service.renameConversation({ conversationId, title: "Renamed" }),
+  () => service.deleteConversation({ conversationId }),
   () => service.getConversation({ conversationId }),
   () => service.getNoteProposal({ proposalId: projectId }),
   () =>
@@ -201,7 +203,7 @@ const sourceRead = (
   rows: unknown[][] = [[sourceNoteId, projectId, "Current authorized title", now]],
 ): Step => ({
   sql: /from "notes" inner join "projects"/,
-  rows,
+  rows: rows.map((row) => [...row, "Authorized project"]),
   inspect: (sql, params) => {
     assert.match(sql, /"notes"\."id" in \(/);
     assert.match(sql, /"notes"\."project_id" = \$/);
@@ -211,6 +213,323 @@ const sourceRead = (
     );
     assert.doesNotMatch(sql, /"content"|"excerpt"/);
   },
+});
+
+test("rename validates and locks an owned Main Chat, changing only title without activity drift", async () => {
+  const f = fixture([
+    begin,
+    lock,
+    {
+      sql: /^update "chat_conversations" set "title" = \$.*"updated_at" = "chat_conversations"\."updated_at"/,
+      rows: [[conversationId, null, "Renamed", now, now]],
+      inspect: (text, params) => {
+        scoped(text, params);
+        assert.ok(params.includes(conversationId) && params.includes("Renamed"));
+        assert.doesNotMatch(text, /set "project_id"|set "owner_id"/);
+        assert.ok(!params.some((p) => p instanceof Date || p === now.toISOString()));
+      },
+    },
+    commit,
+  ]);
+  const renamed = data(
+    await f.service.renameConversation({ conversationId, title: "  Renamed  " }),
+  );
+  assert.equal(renamed.title, "Renamed");
+  assert.equal(renamed.id, conversationId);
+  assert.equal(renamed.projectId, null);
+  assert.equal(renamed.updatedAt.getTime(), now.getTime());
+  exhausted(f);
+  f.expireSession();
+  failure(await f.service.deleteConversation({ conversationId }), "UNAUTHENTICATED");
+  assert.equal(f.sessionCalls(), 2);
+});
+
+test("management rejects invalid IDs/titles, caller authority and non-Main scopes without child writes", async () => {
+  for (const input of [
+    { conversationId: "invalid", title: "T" },
+    { conversationId, title: " " },
+    { conversationId, title: "x".repeat(301) },
+    { conversationId, title: "bad\0title" },
+    { conversationId, title: "\ud800" },
+    { conversationId, title: "T", ownerId: "user-b" },
+    { conversationId, title: "T", projectId },
+  ]) {
+    const f = fixture();
+    failure(await f.service.renameConversation(input), "INVALID_INPUT");
+    assert.equal(f.calls.length, 0);
+  }
+  for (const input of [
+    { conversationId: "invalid" },
+    { conversationId, ownerId: "user-b" },
+    { conversationId, force: true },
+  ]) {
+    const f = fixture();
+    failure(await f.service.deleteConversation(input), "INVALID_INPUT");
+    assert.equal(f.calls.length, 0);
+  }
+  for (const method of ["renameConversation", "deleteConversation"] as const) {
+    for (const rows of [[], [[conversationId, projectId, "Legacy project chat", now, now]]]) {
+      const f = fixture([begin, { ...lock, rows }, rollback]);
+      failure(
+        await f.service[method]({
+          conversationId,
+          ...(method === "renameConversation" ? { title: "T" } : {}),
+        }),
+        "NOT_FOUND",
+      );
+      exhausted(f);
+      assert.ok(!f.calls.some((s) => /^(delete|update|insert)/.test(s)));
+    }
+  }
+});
+
+test("a second account cannot rename or delete the first account's Main Chat", async () => {
+  for (const method of ["renameConversation", "deleteConversation"] as const) {
+    const f = fixture(
+      [
+        begin,
+        {
+          ...lock,
+          rows: [],
+          inspect: (text, params) => {
+            assert.match(text, /"chat_conversations"\."owner_id" = \$/);
+            assert.ok(params.includes("user-b") && params.includes(conversationId));
+            assert.ok(!params.includes("user-a"));
+          },
+        },
+        rollback,
+      ],
+      "user-b",
+    );
+    const result = await f.service[method]({
+      conversationId,
+      ...(method === "renameConversation" ? { title: "T" } : {}),
+    });
+    failure(result, "NOT_FOUND");
+    assert.doesNotMatch(JSON.stringify(result), /user-a|createdAt|projectId|title/);
+    exhausted(f);
+  }
+});
+
+const deleteProposals: Step = {
+  sql: /^delete from "note_proposals" where exists \(select .*from "chat_messages"/,
+  inspect: (text, params) => {
+    messageScoped(text, params);
+    assert.match(text, /"chat_messages"\."id" = "note_proposals"\."source_message_id"/);
+    assert.doesNotMatch(text, /"note_id"|"approved_project_id"|"status"/); // Both proposed and confirmed receipts, not notes.
+  },
+};
+const deleteMessages: Step = { sql: /^delete from "chat_messages"/, inspect: messageScoped };
+const deleteThread: Step = {
+  sql: /^delete from "chat_conversations".*returning/,
+  rows: [[conversationId]],
+  inspect: scoped,
+};
+
+test("permanent delete orders proposals, messages, conversation in one owned transaction; notes/revisions are untouched", async () => {
+  const f = fixture([
+    begin,
+    lock,
+    pending(),
+    deleteProposals,
+    deleteMessages,
+    deleteThread,
+    commit,
+  ]);
+  assert.deepEqual(data(await f.service.deleteConversation({ conversationId })), {
+    id: conversationId,
+  });
+  exhausted(f);
+  assert.equal(f.calls[0], "begin isolation level read committed");
+  assert.equal(f.calls.filter((s) => s.startsWith("delete")).length, 3);
+  assert.ok(
+    !f.calls.some((s) => /^(delete from|update|insert into) "(notes|note_revisions)"/.test(s)),
+  );
+  assert.equal(f.sessionCalls(), 1);
+});
+
+test("any pending response, even abandoned, blocks deletion before destructive statements", async () => {
+  for (const created of [now, new Date(now.getTime() - PENDING_TIMEOUT_MS * 2)]) {
+    const f = fixture([
+      begin,
+      lock,
+      pending([messageRow("assistant", "pending", "", turnId, created)]),
+      rollback,
+    ]);
+    failure(await f.service.deleteConversation({ conversationId }), "CONFLICT");
+    exhausted(f);
+    assert.ok(!f.calls.some((s) => s.startsWith("delete")));
+  }
+});
+
+test("delete and rename failures request rollback and hide SQL/provider/driver details", async () => {
+  const steps = [deleteProposals, deleteMessages, deleteThread, commit];
+  for (let index = 0; index < steps.length; index++) {
+    const f = fixture([
+      begin,
+      lock,
+      pending(),
+      ...steps.slice(0, index),
+      { ...steps[index]!, error: new Error("private SQL credential sentinel") },
+      rollback,
+    ]);
+    const result = await f.service.deleteConversation({ conversationId });
+    failure(result, "UNAVAILABLE");
+    assert.doesNotMatch(JSON.stringify(result), /private|credential|sentinel|SQL/);
+    exhausted(f);
+  }
+  const lost = fixture([
+    begin,
+    lock,
+    pending(),
+    deleteProposals,
+    deleteMessages,
+    { ...deleteThread, rows: [] },
+    rollback,
+  ]);
+  failure(await lost.service.deleteConversation({ conversationId }), "NOT_FOUND");
+  exhausted(lost);
+  const rename = fixture([
+    begin,
+    lock,
+    { sql: /^update "chat_conversations"/, error: new Error("private SQL") },
+    rollback,
+  ]);
+  failure(await rename.service.renameConversation({ conversationId, title: "T" }), "UNAVAILABLE");
+  exhausted(rename);
+});
+
+// Real Drizzle statements over a staged transaction/mutex simulator. It checks
+// application ordering/rollback decisions, NOT PostgreSQL locks, FKs or MVCC.
+function deleteFixture(failAt?: string) {
+  const db = createDb({ DATABASE_URL: "postgresql://unused:unused@127.0.0.1:1/unused" });
+  type Records = {
+    conversation: boolean;
+    pending: boolean;
+    messages: number;
+    proposals: number;
+    notes: number;
+    revisions: number;
+  };
+  let stored: Records = {
+    conversation: true,
+    pending: false,
+    messages: 2,
+    proposals: 2,
+    notes: 1,
+    revisions: 2,
+  };
+  let gate = Promise.resolve();
+  let unlock: (() => void) | undefined;
+  let waited = false;
+  const calls: string[] = [];
+  db.$client.connect = (async () => {
+    let staged: Records | undefined;
+    let release: (() => void) | undefined;
+    return {
+      on() {},
+      off() {},
+      release() {},
+      async query(config: { text: string }) {
+        const text = config.text;
+        calls.push(text);
+        if (text.startsWith("begin")) return { rows: [] };
+        if (text.endsWith('for update of "chat_conversations"')) {
+          waited = true;
+          const before = gate;
+          gate = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+          await before;
+          staged = { ...stored };
+          return { rows: staged.conversation ? [conversationRow] : [] };
+        }
+        if (text === "rollback") {
+          staged = undefined;
+          release?.();
+          return { rows: [] };
+        }
+        if (failAt && text.startsWith(failAt)) throw new Error("Synthetic rollback fault");
+        assert.ok(staged, "Every child operation must follow the owned conversation lock");
+        let rows: unknown[][] = [];
+        if (/^select .*from "chat_messages"/.test(text)) rows = staged.pending ? [["pending"]] : [];
+        else if (text.startsWith('delete from "note_proposals"')) staged.proposals = 0;
+        else if (text.startsWith('delete from "chat_messages"')) {
+          assert.equal(staged.proposals, 0);
+          staged.messages = 0;
+        } else if (text.startsWith('delete from "chat_conversations"')) {
+          assert.equal(staged.messages, 0);
+          staged.conversation = false;
+          rows = [[conversationId]];
+        } else if (text === "commit") {
+          stored = staged;
+          staged = undefined;
+          release?.();
+        } else throw new Error(`Unexpected simulated statement ${text}`);
+        return { rows, rowCount: rows.length };
+      },
+    };
+  }) as unknown as typeof db.$client.connect;
+  return {
+    service: createChatService({ db, getSession: async () => ({ user: { id: "user-a" } }) }),
+    stored: () => ({ ...stored }),
+    calls,
+    waited: () => waited,
+    hold: () => {
+      gate = new Promise<void>((resolve) => {
+        unlock = resolve;
+      });
+    },
+    releaseWriter: (patch: Partial<Records>) => {
+      stored = { ...stored, ...patch };
+      unlock?.();
+    },
+  };
+}
+
+test("simulated partial deletes and commit failures leave original chat, proposals, notes and revisions intact", async () => {
+  for (const point of [
+    'delete from "chat_messages"',
+    'delete from "chat_conversations"',
+    "commit",
+  ]) {
+    const f = deleteFixture(point);
+    const original = f.stored();
+    failure(await f.service.deleteConversation({ conversationId }), "UNAVAILABLE");
+    assert.deepEqual(f.stored(), original);
+    assert.equal(f.calls.at(-1), "rollback");
+  }
+});
+
+test("delete waits for a simulated confirmation SHARE holder, then keeps its committed notes and revisions", async () => {
+  const f = deleteFixture();
+  f.hold();
+  const deleting = f.service.deleteConversation({ conversationId });
+  while (!f.waited()) await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.ok(!f.calls.some((s) => s.startsWith("delete")));
+  f.releaseWriter({ notes: 2 }); // Existing confirmation commits before releasing its conversation lock.
+  assert.deepEqual(data(await deleting), { id: conversationId });
+  assert.deepEqual(f.stored(), {
+    conversation: false,
+    pending: false,
+    messages: 0,
+    proposals: 0,
+    notes: 2,
+    revisions: 2,
+  });
+  failure(await f.service.deleteConversation({ conversationId }), "NOT_FOUND");
+});
+
+test("delete rechecks pending work after waiting for a simulated begin writer", async () => {
+  const f = deleteFixture();
+  f.hold();
+  const deleting = f.service.deleteConversation({ conversationId });
+  while (!f.waited()) await new Promise((resolve) => setTimeout(resolve, 0));
+  f.releaseWriter({ pending: true, messages: 4 });
+  failure(await deleting, "CONFLICT");
+  assert.equal(f.stored().messages, 4);
+  assert.equal(f.stored().proposals, 2);
+  assert.ok(!f.calls.some((s) => s.startsWith("delete")));
 });
 
 test("sources complete atomically with content/status/activity and expose only an authorized public projection", async () => {
@@ -242,6 +561,7 @@ test("sources complete atomically with content/status/activity and expose only a
     ...sourceRefs[0],
     ordinal: 1,
     state: "available",
+    projectName: "Authorized project",
     title: "Current authorized title",
     href: `/projects/${projectId}/notes/${sourceNoteId}`,
     updatedAt: now.toISOString(),
@@ -343,20 +663,18 @@ test("sources contracts reject malformed, duplicate, excessive or client/model-p
 });
 
 test("sources new completion rejects different project scope and unavailable notes before updating", async () => {
-  for (const project of [null, nextTurnId]) {
-    const f = fixture([
-      begin,
-      { ...lock, rows: [[conversationId, project, "Chat", now, now]] },
-      replay([messageRow()]),
-      clock(),
-      rollback,
-    ]);
-    failure(
-      await f.service.completeResponse({ ...turnInput, content: "Answer", sourceRefs }),
-      "INVALID_INPUT",
-    );
-    exhausted(f);
-  }
+  const foreignScope = fixture([
+    begin,
+    { ...lock, rows: [[conversationId, nextTurnId, "Chat", now, now]] },
+    replay([messageRow()]),
+    clock(),
+    rollback,
+  ]);
+  failure(
+    await foreignScope.service.completeResponse({ ...turnInput, content: "Answer", sourceRefs }),
+    "INVALID_INPUT",
+  );
+  exhausted(foreignScope);
   const unavailable = fixture([
     begin,
     sourceLock,
@@ -420,6 +738,7 @@ test("sources history batches authorization, retains ordinal gaps and binds meta
     ...secondRef,
     ordinal: 2,
     state: "available",
+    projectName: "Authorized project",
     title: "Second note, now renamed",
     href: `/projects/${projectId}/notes/${nextTurnId}`,
     updatedAt: now.toISOString(),
@@ -458,6 +777,242 @@ test("sources corrupt stored JSON fails safely without partial trusted links", a
   ]);
   failure(await history.service.getConversation({ conversationId }), "UNAVAILABLE");
   exhausted(history);
+});
+
+const crossNoteId = "88888888-8888-4888-8888-888888888888";
+const crossRefs: contracts.SourceRef[] = [
+  ...sourceRefs,
+  { noteId: crossNoteId, projectId: nextTurnId, retrievedUpdatedAt: now.toISOString() },
+];
+const crossRows = [
+  [sourceNoteId, projectId, "Decision A", now, "Orion"],
+  [crossNoteId, nextTurnId, "Decision B", now, "Vega"],
+];
+const crossSourceRead = (rows: unknown[][] = crossRows): Step => ({
+  sql: /from "notes" inner join "projects"/,
+  rows,
+  inspect: (sql, params) => {
+    assert.match(sql, /"projects"\."id" = "notes"\."project_id"/);
+    assert.match(sql, /"projects"\."owner_id" = \$/);
+    assert.match(sql, /"notes"\."id" in \(/);
+    assert.match(sql, /"projects"\."name"/);
+    assert.ok(
+      params.includes("user-a") && params.includes(sourceNoteId) && params.includes(crossNoteId),
+    );
+    assert.doesNotMatch(sql, /"notes"\."project_id" = \$|"content"|"excerpt"/);
+  },
+});
+
+test("sources general completion atomically accepts multiple owned projects and projects current names", async () => {
+  const f = fixture([
+    begin,
+    lock,
+    replay([messageRow()]),
+    clock(),
+    crossSourceRead(),
+    {
+      ...terminal("completed", "Answer"),
+      rows: [referencedRow(crossRefs)],
+      inspect: (sql, params) => {
+        messageScoped(sql, params);
+        assert.ok(params.includes(JSON.stringify(crossRefs)));
+        assert.match(sql, /"source_refs" = \$/);
+      },
+    },
+    touch,
+    commit,
+  ]);
+  const result = data(
+    await f.service.completeResponse({ ...turnInput, content: "Answer", sourceRefs: crossRefs }),
+  );
+  assert.deepEqual(
+    result.sources.map((source) =>
+      source.state === "available"
+        ? [source.ordinal, source.projectId, source.projectName, source.href]
+        : source,
+    ),
+    [
+      [1, projectId, "Orion", `/projects/${projectId}/notes/${sourceNoteId}`],
+      [2, nextTurnId, "Vega", `/projects/${nextTurnId}/notes/${crossNoteId}`],
+    ],
+  );
+  assert.ok(!("sourceRefs" in result));
+  exhausted(f);
+});
+
+test("sources general completion rejects inaccessible notes and incorrect owned note/project associations before any write", async () => {
+  for (const rows of [
+    [],
+    [crossRows[1]!],
+    [[sourceNoteId, nextTurnId, "Wrong parent", now, "Vega"], crossRows[1]!],
+  ]) {
+    const f = fixture([
+      begin,
+      lock,
+      replay([messageRow()]),
+      clock(),
+      crossSourceRead(rows),
+      rollback,
+    ]);
+    const result = await f.service.completeResponse({
+      ...turnInput,
+      content: "Answer",
+      sourceRefs: crossRefs,
+    });
+    failure(result, "NOT_FOUND");
+    assert.ok(!f.calls.some((sql) => /^(insert|update)/.test(sql)));
+    assert.doesNotMatch(JSON.stringify(result), /Wrong parent|Orion|Vega|sourceRefs/);
+    exhausted(f);
+  }
+});
+
+test("sources general exact completion replay reauthorizes each project and never resurrects inaccessible references", async () => {
+  const f = fixture([
+    begin,
+    lock,
+    replay([referencedRow(crossRefs)]),
+    crossSourceRead([crossRows[1]!]),
+    commit,
+  ]);
+  const result = data(
+    await f.service.completeResponse({ ...turnInput, content: "Answer", sourceRefs: crossRefs }),
+  );
+  assert.deepEqual(result.sources[0], { ordinal: 1, state: "unavailable" });
+  assert.equal(result.sources[1]!.state, "available");
+  if (result.sources[1]!.state === "available")
+    assert.equal(result.sources[1]!.projectName, "Vega");
+  assert.ok(!f.calls.some((sql) => /^(insert|update)/.test(sql)));
+  exhausted(f);
+  const changed = fixture([begin, lock, replay([referencedRow(crossRefs)]), rollback]);
+  failure(
+    await changed.service.completeResponse({
+      ...turnInput,
+      content: "Answer",
+      sourceRefs: [...crossRefs].reverse(),
+    }),
+    "CONFLICT",
+  );
+  exhausted(changed);
+});
+
+test("sources general history preserves ordinals but hides foreign, deleted or moved note/project metadata", async () => {
+  const f = fixture([
+    { sql: /^begin isolation level repeatable read read only$/ },
+    { sql: /from "chat_conversations"/, rows: [conversationRow], inspect: scoped },
+    {
+      sql: /from "chat_messages".*order by/,
+      rows: [referencedRow(crossRefs)],
+      inspect: (_sql, params) => assert.deepEqual(params.slice(-2), [10, 50]),
+    },
+    pending(),
+    clock(),
+    { sql: /from "note_proposals"/ },
+    crossSourceRead([
+      [sourceNoteId, nextTurnId, "Do not expose moved title", now, "Do not expose moved project"],
+      crossRows[1]!,
+    ]),
+    commit,
+  ]);
+  const view = data(
+    await f.service.getConversation({ conversationId, latest: true, limit: 10, offset: 50 }),
+  );
+  assert.deepEqual(view.messages[0]!.sources[0], { ordinal: 1, state: "unavailable" });
+  assert.equal(view.messages[0]!.sources[1]!.state, "available");
+  assert.doesNotMatch(JSON.stringify(view), /Do not expose|sourceRefs/);
+  exhausted(f);
+});
+
+test("sources general history reauthorizes foreign references using the current account without revealing project names", async () => {
+  const f = fixture(
+    [
+      begin,
+      {
+        sql: /from "chat_conversations"/,
+        rows: [conversationRow],
+        inspect: (_sql, params) =>
+          assert.ok(params.includes("user-b") && !params.includes("user-a")),
+      },
+      { sql: /from "chat_messages".*order by/, rows: [referencedRow(crossRefs)] },
+      { sql: /from "chat_messages".*"status" = \$.*limit \$/ },
+      clock(),
+      { sql: /from "note_proposals"/ },
+      {
+        sql: /from "notes" inner join "projects"/,
+        inspect: (sql, params) => {
+          assert.match(sql, /"projects"\."id" = "notes"\."project_id"/);
+          assert.match(sql, /"projects"\."owner_id" = \$/);
+          assert.ok(params.includes("user-b") && !params.includes("user-a"));
+        },
+      },
+      commit,
+    ],
+    "user-b",
+  );
+  const view = data(await f.service.getConversation({ conversationId }));
+  assert.deepEqual(view.messages[0]!.sources, [
+    { ordinal: 1, state: "unavailable" },
+    { ordinal: 2, state: "unavailable" },
+  ]);
+  assert.doesNotMatch(JSON.stringify(view), /Orion|Vega|sourceRefs|projectName/);
+  exhausted(f);
+});
+
+test("sources general completed begin replay returns fresh cross-project projections without writes", async () => {
+  const f = fixture([
+    begin,
+    lock,
+    replay([messageRow("user", "completed", content), referencedRow(crossRefs)]),
+    clock(),
+    { sql: /from "note_proposals"/ },
+    crossSourceRead(),
+    commit,
+  ]);
+  const result = data(await f.service.beginTurn(beginInput));
+  assert.equal(result.replayed, true);
+  assert.deepEqual(
+    result.assistant.sources.map((source) =>
+      source.state === "available" ? source.projectName : null,
+    ),
+    ["Orion", "Vega"],
+  );
+  assert.ok(!f.calls.some((sql) => /^(insert|update)/.test(sql)));
+  exhausted(f);
+});
+
+test("sources general commit failure requests rollback without confirming references", async () => {
+  const f = fixture([
+    begin,
+    lock,
+    replay([messageRow()]),
+    clock(),
+    crossSourceRead(),
+    { ...terminal("completed", "Answer"), rows: [referencedRow(crossRefs)] },
+    { ...touch, error: new Error("private project detail") },
+    rollback,
+  ]);
+  const result = await f.service.completeResponse({
+    ...turnInput,
+    content: "Answer",
+    sourceRefs: crossRefs,
+  });
+  failure(result, "UNAVAILABLE");
+  assert.doesNotMatch(JSON.stringify(result), /Orion|Vega|sourceRefs|private project/);
+  exhausted(f);
+});
+
+test("sources project history still rejects stored cross-project references without projecting any metadata", async () => {
+  const f = fixture([
+    begin,
+    { sql: /from "chat_conversations"/, rows: sourceLock.rows },
+    { sql: /from "chat_messages".*order by/, rows: [referencedRow(crossRefs)] },
+    pending(),
+    clock(),
+    { sql: /from "note_proposals"/ },
+    rollback,
+  ]);
+  failure(await f.service.getConversation({ conversationId }), "UNAVAILABLE");
+  assert.ok(!f.calls.some((sql) => sql.includes('from "notes"')));
+  exhausted(f);
 });
 
 test("sources legacy NULL completion/replay remains source-free", async () => {
@@ -694,6 +1249,184 @@ test("conversation listing is owner/project scoped, bounded and stably ordered",
   ]);
   assert.equal(data(await f.service.listConversations({ limit: 100, offset: 50 })).length, 1);
   exhausted(f);
+});
+
+test("omitted listing scope remains all owned history, including historical project conversations", async () => {
+  const f = fixture([
+    {
+      sql: /from "chat_conversations"/,
+      rows: [conversationRow, [turnId, projectId, "Older project thread", now, now]],
+      inspect: (sql, params) => {
+        scoped(sql, params);
+        assert.equal([...sql.matchAll(/"project_id" is null/g)].length, 1); // Only the existing ownership predicate.
+        assert.deepEqual(params.slice(-1), [50]);
+      },
+    },
+  ]);
+  const result = data(await f.service.listConversations());
+  assert.deepEqual(
+    result.map((row) => row.projectId),
+    [null, projectId],
+  );
+  exhausted(f);
+  assert.equal(contracts.listConversationsInput.parse({}).projectId, undefined);
+});
+
+test("explicit null filters Main Chat in SQL before ordering and pagination without changing ownership", async () => {
+  const f = fixture([
+    {
+      sql: /from "chat_conversations"/,
+      rows: [conversationRow],
+      inspect: (sql, params) => {
+        scoped(sql, params);
+        assert.match(
+          sql.replace(/[()]/g, ""),
+          /and "chat_conversations"\."project_id" is null order by "chat_conversations"\."updated_at" desc, "chat_conversations"\."id" desc limit \$\d+ offset \$/,
+        );
+        assert.deepEqual(params.slice(-2), [20, 40]);
+        assert.ok(!params.includes(null));
+      },
+    },
+  ]);
+  assert.equal(
+    data(await f.service.listConversations({ projectId: null, limit: 20, offset: 40 }))[0]!
+      .projectId,
+    null,
+  );
+  exhausted(f);
+  assert.equal(contracts.listConversationsInput.parse({ projectId: null }).projectId, null);
+});
+
+test("Main Chat and all-history listing retain fresh account isolation and safe empty results", async () => {
+  for (const scope of [{ projectId: null }, {}]) {
+    const f = fixture(
+      [
+        {
+          sql: /from "chat_conversations"/,
+          inspect: (sql, params) => {
+            assert.match(sql, /"chat_conversations"\."owner_id" = \$/);
+            assert.match(sql, /"projects"\."owner_id" = \$/);
+            assert.equal(params.filter((value) => value === "user-b").length, 2);
+            assert.ok(!params.includes("user-a"));
+          },
+        },
+      ],
+      "user-b",
+    );
+    assert.deepEqual(data(await f.service.listConversations(scope)), []);
+    f.expireSession();
+    failure(await f.service.listConversations(scope), "UNAUTHENTICATED");
+    assert.equal(f.sessionCalls(), 2);
+    assert.equal(f.calls.length, 1);
+    exhausted(f);
+  }
+});
+
+test("both history scopes sanitize failures and reject caller identity overrides before SQL", async () => {
+  for (const scope of [{ projectId: null }, {}]) {
+    const f = fixture([
+      { sql: /from "chat_conversations"/, error: new Error("private driver sentinel") },
+    ]);
+    const result = await f.service.listConversations(scope);
+    failure(result, "UNAVAILABLE");
+    assert.ok(!JSON.stringify(result).includes("private driver sentinel"));
+    exhausted(f);
+    const invalid = fixture();
+    failure(
+      await invalid.service.listConversations({ ...scope, ownerId: "user-b" }),
+      "INVALID_INPUT",
+    );
+    assert.equal(invalid.calls.length, 0);
+  }
+});
+
+test("latest project conversation lookup filters in SQL before stable ordering and limit one", async () => {
+  const f = fixture([
+    {
+      sql: /from "chat_conversations"/,
+      rows: [[conversationId, projectId, "Project conversation", now, now]],
+      inspect: (sql, params) => {
+        scoped(sql, params);
+        assert.match(
+          sql,
+          /and \("chat_conversations"\."project_id" = \$\d+\)\) order by "chat_conversations"\."updated_at" desc, "chat_conversations"\."id" desc limit \$/,
+        );
+        assert.deepEqual(params.slice(-2), [projectId, 1]);
+        assert.doesNotMatch(sql, /offset|\b(?:insert|update|delete)\s/i);
+      },
+    },
+  ]);
+  const result = await f.service.listConversations({ projectId, limit: 1, offset: 0 });
+  exhausted(f);
+  const rows = data(result);
+  assert.equal(rows[0]!.projectId, projectId);
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.sessionCalls(), 1);
+  exhausted(f);
+});
+
+test("foreign, nonexistent and empty project history all return empty without writes or metadata", async () => {
+  for (const id of [projectId, turnId, nextTurnId]) {
+    const f = fixture([
+      {
+        sql: /from "chat_conversations"/,
+        inspect: (sql, params) => {
+          scoped(sql, params);
+          assert.ok(params.includes(id));
+        },
+      },
+    ]);
+    assert.deepEqual(data(await f.service.listConversations({ projectId: id, limit: 1 })), []);
+    assert.equal(f.calls.length, 1);
+    exhausted(f);
+  }
+});
+
+test("project history filter rejects malformed IDs, identity overrides and invalid bounds before SQL", async () => {
+  const f = fixture();
+  for (const input of [
+    { projectId: "invalid" },
+    { projectId: false },
+    { projectId: [projectId] },
+    { projectId, ownerId: "user-b" },
+    { projectId, limit: 0 },
+    { projectId, offset: -1 },
+  ])
+    failure(await f.service.listConversations(input), "INVALID_INPUT");
+  assert.equal(f.calls.length, 0);
+  const anonymous = fixture([], null);
+  failure(await anonymous.service.listConversations({ projectId, limit: 1 }), "UNAUTHENTICATED");
+  assert.equal(anonymous.calls.length, 0);
+});
+
+test("project lookup rechecks the session on every invocation and binds the current owner on both joins", async () => {
+  const f = fixture([
+    {
+      sql: /from "chat_conversations"/,
+      inspect: scoped,
+    },
+  ]);
+  data(await f.service.listConversations({ projectId, limit: 1 }));
+  f.expireSession();
+  failure(await f.service.listConversations({ projectId, limit: 1 }), "UNAUTHENTICATED");
+  assert.equal(f.sessionCalls(), 2);
+  assert.equal(f.calls.length, 1);
+  exhausted(f);
+  const b = fixture(
+    [
+      {
+        sql: /from "chat_conversations"/,
+        inspect: (_sql, params) => {
+          assert.equal(params.filter((value) => value === "user-b").length, 2);
+          assert.ok(!params.includes("user-a"));
+          assert.ok(params.includes(projectId));
+        },
+      },
+    ],
+    "user-b",
+  );
+  assert.deepEqual(data(await b.service.listConversations({ projectId, limit: 1 })), []);
+  exhausted(b);
 });
 
 test("retrieval reads one coherent snapshot with ordered, paginated, owned messages and pending detection", async () => {

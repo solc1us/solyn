@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { createNoteInput, searchNotesInput } from "../workspace/contracts";
+import { createNoteInput, createProjectInput, searchNotesInput } from "../workspace/contracts";
 
 export type ErrorCode =
   | "UNAUTHENTICATED"
@@ -28,12 +28,21 @@ export const createConversationInput = z.strictObject({
   title: z.string().trim().min(1).max(300),
   projectId: uuid.nullable().default(null),
 });
-export const listConversationsInput = z.strictObject(pagination);
+// Omitted: all owned history; null: Main Chat only; UUID: one owned project.
+export const listConversationsInput = z.strictObject({
+  ...pagination,
+  projectId: uuid.nullable().optional(),
+});
 export const getConversationInput = z.strictObject({
   conversationId: uuid,
   ...pagination,
   latest: z.boolean().default(false),
 });
+export const renameConversationInput = z.strictObject({
+  conversationId: uuid,
+  title: createConversationInput.shape.title.refine(isChatText),
+});
+export const deleteConversationInput = z.strictObject({ conversationId: uuid });
 export const beginTurnInput = z.strictObject({
   ...turn,
   content,
@@ -64,6 +73,7 @@ export const sourcesSchema = z
         state: z.literal("available"),
         noteId: uuid,
         projectId: uuid,
+        projectName: createProjectInput.shape.name.refine(isChatText),
         title: createNoteInput.shape.title.refine(isChatText),
         href: z.string(),
         retrievedUpdatedAt: sourceTimestamp,

@@ -1,5 +1,7 @@
 "use server";
 
+import { revalidatePath } from "next/cache";
+
 import { workspace } from "../workspace/server";
 import { chat } from "./server";
 import type { ChatResult } from "./contracts";
@@ -12,6 +14,16 @@ type View = Extract<Awaited<ReturnType<typeof chat.getConversation>>, { ok: true
 // writes and recovery remain internal; the stream endpoint owns inference.
 export async function createConversation(input: unknown) {
   return chat.createConversation(input);
+}
+export async function renameConversation(input: unknown) {
+  const result = await chat.renameConversation(input);
+  if (result.ok) revalidatePath("/chat");
+  return result;
+}
+export async function deleteConversation(input: unknown) {
+  const result = await chat.deleteConversation(input);
+  if (result.ok) revalidatePath("/chat");
+  return result;
 }
 export async function listConversations(input: unknown = {}) {
   return chat.listConversations(input);
